@@ -1,859 +1,543 @@
-import React from 'react';
-import type { StoryMeta } from '../types';
-import { StackedBarChart } from '../components/charts/StackedBarChart';
-import { FlexButton } from '../components/atoms/FlexButton';
-import type { FlexButtonVariant, FlexButtonSize } from '../components/atoms/FlexButton';
-import { Badge } from '../components/atoms/Badge';
-import type { BadgeType, BadgeVariant, BadgeSize, BadgeShape } from '../components/atoms/Badge';
+import {
+  forwardRef,
+  useState,
+  useCallback,
+  type InputHTMLAttributes,
+  type MouseEventHandler,
+  type ReactNode,
+} from 'react';
+import styles from './Input.module.scss';
 
-export interface Story {
-  meta: StoryMeta;
-  render: () => React.ReactNode;
+export type InputVariant = 'default' | 'primary';
+export type InputSize    = 'md' | 'lg' | 'xl';
+
+export interface InputProps
+  extends Omit<InputHTMLAttributes<HTMLInputElement>, 'className' | 'size'> {
+  /** Visual style variant. Defaults to "default". */
+  variant?: InputVariant;
+  /** Size scale. Defaults to "md". */
+  size?: InputSize;
+  /** Puts the input into an error state (overrides variant colours). */
+  error?: boolean;
+  /** Puts the input into a warning state (overrides variant colours). */
+  warning?: boolean;
+  /** Static text rendered before the input text. */
+  prefix?: string;
+  /** Static text rendered after the input text. */
+  suffix?: string;
+  /** Icon element rendered on the left edge. */
+  iconLeft?: ReactNode;
+  /** Icon element rendered on the right edge. */
+  iconRight?: ReactNode;
+  /** Click handler for the left icon — renders it as a <button> when provided. */
+  onIconLeftClick?: MouseEventHandler<HTMLButtonElement>;
+  /** Click handler for the right icon — renders it as a <button> when provided. */
+  onIconRightClick?: MouseEventHandler<HTMLButtonElement>;
+  /** Shows an × button to clear the input when a value is present. */
+  clearable?: boolean;
+  /** Called when the clear button is clicked. Use this to reset controlled state. */
+  onClear?: () => void;
 }
 
-// Segment definitions matching the reference image: green (top), orange (middle), red/dark-red (bottom visible), grey (base)
-// From the image bottom→top: grey (Status), red (Cut), orange/brown (Call)
-// The green top segment appears at higher CR values — it's the dominant color at 100%+
-const SEG = {
-  status: { label: 'Status', color: '#8D929B' },
-  cut:    { label: 'Cut',    color: '#922B21' },
-  call:   { label: 'Call',   color: '#A04000' },
-  green:  { label: 'CR',     color: '#1E6B3C' },
-};
-
-// Reference image uses these approximate proportions:
-// green is the biggest block, orange second, red smaller, grey small base
-function makeSegments(cr: number) {
-  if (cr === 0) return [
-    { ...SEG.status, value: 0 },
-    { ...SEG.cut,    value: 0 },
-    { ...SEG.call,   value: 0 },
-    { ...SEG.green,  value: 0 },
-  ];
-  // Proportions: green ~50%, call ~30%, cut ~15%, status ~5%
-  return [
-    { ...SEG.status, value: Math.round(cr * 0.05) },
-    { ...SEG.cut,    value: Math.round(cr * 0.15) },
-    { ...SEG.call,   value: Math.round(cr * 0.30) },
-    { ...SEG.green,  value: Math.round(cr * 0.50) },
-  ];
-}
-
-// =============================================================================
-// FlexButton — shared helpers
-// =============================================================================
-
-const PlusIcon = () => (
+const ClearIcon = () => (
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-    <path d="M8 2v12M2 8h12" />
+    <path d="M4 4l8 8M12 4l-8 8" />
   </svg>
 );
 
-const ArrowRightIcon = () => (
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M3 8h10M9 4l4 4-4 4" />
-  </svg>
-);
-
-const ALL_VARIANTS: FlexButtonVariant[] = [
-  'default', 'primary', 'secondary', 'tertiary',
-  'danger', 'success', 'neutral', 'contrast',
-  'destructive', 'positive', 'warning', 'on-inverse',
-];
-
-const ALL_SIZES: FlexButtonSize[] = ['sm', 'md', 'lg', 'xl'];
-
-// Shared label styles for story grids
-const label = (text: string) => (
-  <span style={{ fontSize: 11, color: '#6b7280', fontFamily: 'monospace', userSelect: 'none' }}>
-    {text}
-  </span>
-);
-
-const sectionTitle = (text: string) => (
-  <div style={{ fontSize: 12, fontWeight: 700, color: '#374151', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 12 }}>
-    {text}
-  </div>
-);
-
-// Dark swatch for on-inverse
-const darkBg = { background: '#1f2937', padding: '12px 16px', borderRadius: 8 };
-
-// =============================================================================
-// FlexButton stories
-// =============================================================================
-
-const flexButtonStories: Story[] = [
-  // ── All Variants ─────────────────────────────────────────────────────────
+export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   {
-    meta: {
-      id: 'flex-button/all-variants',
-      name: 'All variants',
-      component: 'FlexButton',
-      description: 'Every variant at md size with an icon and label.',
-    },
-    render: () => (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
-        {/* Normal variants */}
-        <div>
-          {sectionTitle('Standard')}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-            {ALL_VARIANTS.filter(v => v !== 'on-inverse').map(v => (
-              <div key={v} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                <FlexButton icon={<PlusIcon />} label={v} variant={v} />
-                {label(v)}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* on-inverse on dark background */}
-        <div>
-          {sectionTitle('on-inverse (dark surface)')}
-          <div style={darkBg}>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                <FlexButton icon={<PlusIcon />} label="on-inverse" variant="on-inverse" />
-                {React.cloneElement(label('on-inverse'), { style: { fontSize: 11, color: '#9ca3af', fontFamily: 'monospace', userSelect: 'none' } })}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    ),
+    variant   = 'default',
+    size      = 'md',
+    error     = false,
+    warning   = false,
+    prefix,
+    suffix,
+    iconLeft,
+    iconRight,
+    onIconLeftClick,
+    onIconRightClick,
+    clearable = false,
+    onClear,
+    disabled,
+    readOnly,
+    value,
+    defaultValue,
+    onChange,
+    ...rest
   },
+  ref,
+) {
+  // Track value locally so the clear button knows when to appear.
+  const [localValue, setLocalValue] = useState<string>(
+    (value ?? defaultValue ?? '') as string,
+  );
 
-  // ── All Sizes ─────────────────────────────────────────────────────────────
-  {
-    meta: {
-      id: 'flex-button/sizes',
-      name: 'Sizes',
-      component: 'FlexButton',
-      description: 'sm / md / lg / xl with primary variant, icon left, and with icon right.',
+  // Keep localValue in sync when the controlled value changes.
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setLocalValue(e.target.value);
+      onChange?.(e);
     },
-    render: () => (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
-        <div>
-          {sectionTitle('Icon left (default)')}
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-            {ALL_SIZES.map(s => (
-              <div key={s} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                <FlexButton icon={<PlusIcon />} label="Add item" variant="primary" size={s} />
-                {label(s)}
-              </div>
-            ))}
-          </div>
-        </div>
+    [onChange],
+  );
 
-        <div>
-          {sectionTitle('Icon right')}
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-            {ALL_SIZES.map(s => (
-              <div key={s} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                <FlexButton icon={<ArrowRightIcon />} label="Continue" variant="primary" size={s} iconPlacement="right" />
-                {label(s)}
-              </div>
-            ))}
-          </div>
-        </div>
+  const handleClear = useCallback(() => {
+    setLocalValue('');
+    onClear?.();
+    // For controlled inputs the consumer resets via onClear.
+    // For uncontrolled inputs we need to reset the DOM node directly.
+    if (!onClear && ref && typeof ref === 'object' && ref.current) {
+      ref.current.value = '';
+      ref.current.focus();
+    }
+  }, [onClear, ref]);
 
-        <div>
-          {sectionTitle('Secondary variant')}
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-            {ALL_SIZES.map(s => (
-              <div key={s} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                <FlexButton icon={<PlusIcon />} label="Add item" variant="secondary" size={s} />
-                {label(s)}
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    ),
-  },
+  // Derive the displayed value for the clear-button visibility check.
+  const displayValue  = value !== undefined ? (value as string) : localValue;
+  const showClear     = clearable && Boolean(displayValue) && !disabled && !readOnly;
 
-  // ── Content modes ─────────────────────────────────────────────────────────
-  {
-    meta: {
-      id: 'flex-button/content-modes',
-      name: 'Content modes',
-      component: 'FlexButton',
-      description: 'Label only · Icon only · Icon left + label · Icon right + label',
-    },
-    render: () => (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
-        {(['primary', 'secondary', 'tertiary', 'default'] as FlexButtonVariant[]).map(v => (
-          <div key={v}>
-            {sectionTitle(v)}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                <FlexButton label="Label only" variant={v} />
-                {label('label only')}
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                <FlexButton icon={<PlusIcon />} variant={v} title="Icon only" />
-                {label('icon only')}
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                <FlexButton icon={<PlusIcon />} label="Icon left" variant={v} />
-                {label('icon left')}
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                <FlexButton icon={<ArrowRightIcon />} label="Icon right" variant={v} iconPlacement="right" />
-                {label('icon right')}
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    ),
-  },
+  const state = error ? 'error' : warning ? 'warning' : undefined;
 
-  // ── States ────────────────────────────────────────────────────────────────
-  {
-    meta: {
-      id: 'flex-button/states',
-      name: 'States',
-      component: 'FlexButton',
-      description: 'rest · selected (aria-pressed) · disabled — across all variants.',
-    },
-    render: () => {
-      const stateVariants: FlexButtonVariant[] = [
-        'default', 'primary', 'secondary', 'tertiary',
-        'danger', 'success', 'neutral', 'contrast',
-        'destructive', 'positive', 'warning',
-      ];
-
-      const colHead = (text: string) => (
-        <div style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', fontFamily: 'monospace', textAlign: 'center', minWidth: 100 }}>
-          {text}
-        </div>
-      );
-
-      return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-          {/* Header row */}
-          <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr 1fr 1fr', gap: 12, alignItems: 'center', paddingBottom: 8, borderBottom: '1px solid #e5e7eb', marginBottom: 12 }}>
-            <div />
-            {colHead('rest')}
-            {colHead('selected')}
-            {colHead('disabled')}
-          </div>
-
-          {/* Variant rows */}
-          {stateVariants.map(v => (
-            <div
-              key={v}
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '110px 1fr 1fr 1fr',
-                gap: 12,
-                alignItems: 'center',
-                padding: '8px 0',
-                borderBottom: '1px solid #f3f4f6',
-              }}
-            >
-              <div style={{ fontSize: 11, fontFamily: 'monospace', color: '#374151', fontWeight: 600 }}>{v}</div>
-              <div style={{ display: 'flex', justifyContent: 'center' }}>
-                <FlexButton icon={<PlusIcon />} label="Button" variant={v} />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'center' }}>
-                <FlexButton icon={<PlusIcon />} label="Button" variant={v} selected />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'center' }}>
-                <FlexButton icon={<PlusIcon />} label="Button" variant={v} disabled />
-              </div>
-            </div>
-          ))}
-
-          {/* on-inverse row on dark bg */}
-          <div style={{ marginTop: 16 }}>
-            {sectionTitle('on-inverse (dark surface)')}
-            <div style={{ ...darkBg, display: 'grid', gridTemplateColumns: '110px 1fr 1fr 1fr', gap: 12, alignItems: 'center' }}>
-              <div style={{ fontSize: 11, fontFamily: 'monospace', color: '#9ca3af', fontWeight: 600 }}>on-inverse</div>
-              <div style={{ display: 'flex', justifyContent: 'center' }}>
-                <FlexButton icon={<PlusIcon />} label="Button" variant="on-inverse" />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'center' }}>
-                <FlexButton icon={<PlusIcon />} label="Button" variant="on-inverse" selected />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'center' }}>
-                <FlexButton icon={<PlusIcon />} label="Button" variant="on-inverse" disabled />
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    },
-  },
-
-  // ── Compact / collapse ────────────────────────────────────────────────────
-  {
-    meta: {
-      id: 'flex-button/compact',
-      name: 'Compact collapse',
-      component: 'FlexButton',
-      description: 'When the button\'s rendered width drops below the size threshold the label hides and only the icon remains.',
-    },
-    render: () => (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
-        <div>
-          {sectionTitle('Unconstrained vs constrained')}
-          <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            {/* Unconstrained — shows full label */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <FlexButton icon={<PlusIcon />} label="Add item" variant="primary" />
-              {label('natural width → label visible')}
-            </div>
-
-            {/* Constrained to trigger collapse for each size */}
-            {([
-              { size: 'sm' as FlexButtonSize, width: 32 },
-              { size: 'md' as FlexButtonSize, width: 40 },
-              { size: 'lg' as FlexButtonSize, width: 50 },
-              { size: 'xl' as FlexButtonSize, width: 58 },
-            ]).map(({ size, width }) => (
-              <div key={size} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div style={{ width, overflow: 'hidden' }}>
-                  <FlexButton
-                    icon={<PlusIcon />}
-                    label="Add item"
-                    variant="primary"
-                    size={size}
-                    title="Add item"
-                    style={{ width: '100%' }}
-                  />
-                </div>
-                {label(`${size} @ ${width}px → icon only`)}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          {sectionTitle('Multiple variants collapsed')}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-            {ALL_VARIANTS.filter(v => v !== 'on-inverse').map(v => (
-              <div key={v} style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center' }}>
-                <div style={{ width: 40, overflow: 'hidden' }}>
-                  <FlexButton
-                    icon={<PlusIcon />}
-                    label="Add"
-                    variant={v}
-                    title="Add"
-                    style={{ width: '100%' }}
-                  />
-                </div>
-                {label(v)}
-              </div>
-            ))}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center' }}>
-              <div style={{ width: 40, overflow: 'hidden', ...darkBg, padding: '4px 4px' }}>
-                <FlexButton
-                  icon={<PlusIcon />}
-                  label="Add"
-                  variant="on-inverse"
-                  title="Add"
-                  style={{ width: '100%' }}
-                />
-              </div>
-              {label('on-inverse')}
-            </div>
-          </div>
-        </div>
-      </div>
-    ),
-  },
-
-  // ── All sizes × all variants matrix ──────────────────────────────────────
-  {
-    meta: {
-      id: 'flex-button/size-variant-matrix',
-      name: 'Size × variant matrix',
-      component: 'FlexButton',
-      description: 'Every size combined with every variant — icon + label.',
-    },
-    render: () => (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-        {/* Header */}
-        <div style={{ display: 'grid', gridTemplateColumns: `100px repeat(${ALL_SIZES.length}, 1fr)`, gap: 8, paddingBottom: 8, borderBottom: '1px solid #e5e7eb', marginBottom: 8 }}>
-          <div />
-          {ALL_SIZES.map(s => (
-            <div key={s} style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', fontFamily: 'monospace', textAlign: 'center' }}>{s}</div>
-          ))}
-        </div>
-
-        {/* Rows */}
-        {ALL_VARIANTS.map(v => (
-          <div
-            key={v}
-            style={{
-              display: 'grid',
-              gridTemplateColumns: `100px repeat(${ALL_SIZES.length}, 1fr)`,
-              gap: 8,
-              alignItems: 'center',
-              padding: '6px 0',
-              borderBottom: '1px solid #f3f4f6',
-              background: v === 'on-inverse' ? '#1f2937' : 'transparent',
-              borderRadius: v === 'on-inverse' ? 6 : 0,
-              paddingLeft: v === 'on-inverse' ? 8 : 0,
-            }}
+  return (
+    <div
+      className={styles.wrapper}
+      data-variant={variant}
+      data-size={size}
+      data-state={state}
+      data-disabled={disabled || undefined}
+      data-readonly={readOnly || undefined}
+      data-has-icon-left={iconLeft ? '' : undefined}
+      data-has-icon-right={iconRight ? '' : undefined}
+    >
+      {/* Left icon */}
+      {iconLeft && (
+        onIconLeftClick ? (
+          <button
+            type="button"
+            className={styles.iconButton}
+            onClick={onIconLeftClick}
+            disabled={disabled}
+            tabIndex={disabled ? -1 : 0}
+            aria-label="Left action"
           >
-            <div style={{ fontSize: 11, fontFamily: 'monospace', color: v === 'on-inverse' ? '#9ca3af' : '#374151', fontWeight: 600 }}>{v}</div>
-            {ALL_SIZES.map(s => (
-              <div key={s} style={{ display: 'flex', justifyContent: 'center' }}>
-                <FlexButton icon={<PlusIcon />} label="Add" variant={v} size={s} />
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
-    ),
-  },
-];
+            {iconLeft}
+          </button>
+        ) : (
+          <span className={styles.iconSlot} aria-hidden="true">
+            {iconLeft}
+          </span>
+        )
+      )}
 
-export const stories: Story[] = [
-  ...flexButtonStories,
-  {
-    meta: {
-      id: 'stacked-bar-chart/zero',
-      name: 'CR = 0%',
-      component: 'StackedBarChart',
-      description: 'Empty state — no bar rendered.',
-    },
-    render: () => (
-      <StackedBarChart
-        title="CR = 0%"
-        label="Status"
-        maxDisplayValue={200}
-        unit="%"
-        segments={makeSegments(0)}
+      {/* String prefix */}
+      {prefix && (
+        <span className={styles.prefix}>{prefix}</span>
+      )}
+
+      {/* Input */}
+      <input
+        ref={ref}
+        className={styles.input}
+        disabled={disabled}
+        readOnly={readOnly}
+        value={value}
+        defaultValue={value === undefined ? defaultValue : undefined}
+        onChange={handleChange}
+        {...rest}
       />
-    ),
-  },
-  {
-    meta: {
-      id: 'stacked-bar-chart/cr40',
-      name: 'CR = 40%',
-      component: 'StackedBarChart',
-      description: 'Bar reaches 40% of the 200% display range.',
-    },
-    render: () => (
-      <StackedBarChart
-        title="CR= 40%"
-        label="Status"
-        maxDisplayValue={200}
-        unit="%"
-        segments={makeSegments(40)}
-      />
-    ),
-  },
-  {
-    meta: {
-      id: 'stacked-bar-chart/cr75',
-      name: 'CR = 75%',
-      component: 'StackedBarChart',
-      description: 'Bar reaches 75% of the 200% display range.',
-    },
-    render: () => (
-      <StackedBarChart
-        title="CR= 75%"
-        label="Status"
-        maxDisplayValue={200}
-        unit="%"
-        segments={makeSegments(75)}
-      />
-    ),
-  },
-  {
-    meta: {
-      id: 'stacked-bar-chart/cr100',
-      name: 'CR = 100%',
-      component: 'StackedBarChart',
-      description: 'Baseline — bar sits at exactly 100% (half of the 200% scale).',
-    },
-    render: () => (
-      <StackedBarChart
-        title="CR =100%"
-        label="Status"
-        maxDisplayValue={200}
-        unit="%"
-        segments={makeSegments(100)}
-      />
-    ),
-  },
-  {
-    meta: {
-      id: 'stacked-bar-chart/cr150',
-      name: 'CR = 150%',
-      component: 'StackedBarChart',
-      description: 'Bar exceeds baseline but stays within the 200% scale.',
-    },
-    render: () => (
-      <StackedBarChart
-        title="CR= 150%"
-        label="Status"
-        maxDisplayValue={200}
-        unit="%"
-        segments={makeSegments(150)}
-      />
-    ),
-  },
-  {
-    meta: {
-      id: 'stacked-bar-chart/cr183',
-      name: 'CR = 183%',
-      component: 'StackedBarChart',
-      description: 'Near the top of the 200% scale.',
-    },
-    render: () => (
-      <StackedBarChart
-        title="CR =183%"
-        label="Status"
-        maxDisplayValue={200}
-        unit="%"
-        segments={makeSegments(183)}
-      />
-    ),
-  },
-  {
-    meta: {
-      id: 'stacked-bar-chart/cr250',
-      name: 'CR = 250%',
-      component: 'StackedBarChart',
-      description: 'Overflow — zigzag appears at the top of the bar, tick shows actual value.',
-    },
-    render: () => (
-      <StackedBarChart
-        title="CR= 250%"
-        label="Status"
-        maxDisplayValue={200}
-        unit="%"
-        segments={makeSegments(250)}
-      />
-    ),
-  },
-  {
-    meta: {
-      id: 'stacked-bar-chart/cr300',
-      name: 'CR = 300%',
-      component: 'StackedBarChart',
-      description: 'Maximum overflow — zigzag at top, tooltip on hover shows "Value exceeds 200%".',
-    },
-    render: () => (
-      <StackedBarChart
-        title="CR= 300%"
-        label="Status"
-        maxDisplayValue={200}
-        unit="%"
-        segments={makeSegments(300)}
-      />
-    ),
-  },
-  {
-    meta: {
-      id: 'stacked-bar-chart/all-variants',
-      name: 'All CR variants side-by-side',
-      component: 'StackedBarChart',
-      description: 'Replicates the reference image — all 8 CR states in a single row.',
-    },
-    render: () => (
-      <div style={{ display: 'flex', gap: 48, alignItems: 'flex-end', flexWrap: 'wrap', padding: '16px 0' }}>
-        {[0, 40, 75, 100, 150, 183, 250, 300].map((cr) => (
-          <StackedBarChart
-            key={cr}
-            title={cr === 0 ? '0' : `CR= ${cr}%`}
-            label="Status"
-            maxDisplayValue={200}
-            unit="%"
-            segments={makeSegments(cr)}
-          />
-        ))}
-      </div>
-    ),
-  },
-];
+
+      {/* String suffix */}
+      {suffix && (
+        <span className={styles.suffix}>{suffix}</span>
+      )}
+
+      {/* Clear button */}
+      {showClear && (
+        <button
+          type="button"
+          className={styles.clearButton}
+          onClick={handleClear}
+          tabIndex={0}
+          aria-label="Clear input"
+        >
+          <ClearIcon />
+        </button>
+      )}
+
+      {/* Right icon */}
+      {iconRight && (
+        onIconRightClick ? (
+          <button
+            type="button"
+            className={styles.iconButton}
+            onClick={onIconRightClick}
+            disabled={disabled}
+            tabIndex={disabled ? -1 : 0}
+            aria-label="Right action"
+          >
+            {iconRight}
+          </button>
+        ) : (
+          <span className={styles.iconSlot} aria-hidden="true">
+            {iconRight}
+          </span>
+        )
+      )}
+    </div>
+  );
+});
+
+
+
 
 // =============================================================================
-// Badge — shared helpers
+// Input — CSS Module
+// All dynamic state is driven via data attributes on .wrapper.
+// Naming: $ana-input-{variant?}-{location}-{state}
 // =============================================================================
 
-const CheckIcon = () => (
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M3 8.5l3.5 3.5 6.5-7" />
-  </svg>
-);
+// ─── Default variant ─────────────────────────────────────────────────────────
+$ana-input-bg-rest:              var(--ana-input-bg-rest,              #ffffff);
+$ana-input-fg-rest:              var(--ana-input-fg-rest,              #111827);
+$ana-input-border-rest:          var(--ana-input-border-rest,          #d1d5db);
 
-const InfoIcon = () => (
-  <svg viewBox="0 0 16 16" fill="currentColor">
-    <circle cx="8" cy="8" r="7" fillOpacity="0" stroke="currentColor" strokeWidth="1.5" />
-    <path d="M8 7v5M8 5v.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-  </svg>
-);
+$ana-input-bg-hover:             var(--ana-input-bg-hover,             #f9fafb);
+$ana-input-fg-hover:             var(--ana-input-fg-hover,             #111827);
+$ana-input-border-hover:         var(--ana-input-border-hover,         #9ca3af);
 
-const WarningIcon = () => (
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M8 2L14.5 13.5H1.5L8 2z" />
-    <path d="M8 7v3M8 11.5v.01" strokeWidth="2" />
-  </svg>
-);
+$ana-input-bg-focus:             var(--ana-input-bg-focus,             #ffffff);
+$ana-input-fg-focus:             var(--ana-input-fg-focus,             #111827);
+$ana-input-border-focus:         var(--ana-input-border-focus,         #2563eb);
 
-const DotIcon = () => (
-  <svg viewBox="0 0 16 16" fill="currentColor">
-    <circle cx="8" cy="8" r="3.5" />
-  </svg>
-);
+$ana-input-bg-disabled:          var(--ana-input-bg-disabled,          #f3f4f6);
+$ana-input-fg-disabled:          var(--ana-input-fg-disabled,          #9ca3af);
+$ana-input-border-disabled:      var(--ana-input-border-disabled,      #e5e7eb);
 
-const ALL_BADGE_TYPES: BadgeType[]    = ['info', 'success', 'warning', 'neutral'];
-const ALL_BADGE_VARIANTS: BadgeVariant[] = ['filled', 'outlined'];
-const ALL_BADGE_SIZES: BadgeSize[]    = ['md', 'lg'];
-const ALL_BADGE_SHAPES: BadgeShape[]  = ['squared', 'rounded'];
+$ana-input-bg-readonly:          var(--ana-input-bg-readonly,          #f9fafb);
+$ana-input-fg-readonly:          var(--ana-input-fg-readonly,          #6b7280);
+$ana-input-border-readonly:      var(--ana-input-border-readonly,      #e5e7eb);
 
-const typeIcon: Record<BadgeType, React.ReactNode> = {
-  info:    <InfoIcon />,
-  success: <CheckIcon />,
-  warning: <WarningIcon />,
-  neutral: <DotIcon />,
-};
+// ─── Primary variant ─────────────────────────────────────────────────────────
+$ana-input-primary-bg-rest:      var(--ana-input-primary-bg-rest,      #ffffff);
+$ana-input-primary-fg-rest:      var(--ana-input-primary-fg-rest,      #111827);
+$ana-input-primary-border-rest:  var(--ana-input-primary-border-rest,  #2563eb);
 
-const badgeLabel = (text: string) => (
-  <span style={{ fontSize: 10, color: '#6b7280', fontFamily: 'monospace', userSelect: 'none' }}>{text}</span>
-);
+$ana-input-primary-bg-hover:     var(--ana-input-primary-bg-hover,     #eff6ff);
+$ana-input-primary-fg-hover:     var(--ana-input-primary-fg-hover,     #111827);
+$ana-input-primary-border-hover: var(--ana-input-primary-border-hover, #1d4ed8);
 
-const badgeSectionTitle = (text: string) => (
-  <div style={{ fontSize: 12, fontWeight: 700, color: '#374151', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 12 }}>
-    {text}
-  </div>
-);
+$ana-input-primary-bg-focus:     var(--ana-input-primary-bg-focus,     #ffffff);
+$ana-input-primary-fg-focus:     var(--ana-input-primary-fg-focus,     #111827);
+$ana-input-primary-border-focus: var(--ana-input-primary-border-focus, #2563eb);
+
+$ana-input-primary-bg-disabled:  var(--ana-input-primary-bg-disabled,  #f3f4f6);
+$ana-input-primary-fg-disabled:  var(--ana-input-primary-fg-disabled,  #9ca3af);
+$ana-input-primary-border-disabled: var(--ana-input-primary-border-disabled, #bfdbfe);
+
+$ana-input-primary-bg-readonly:  var(--ana-input-primary-bg-readonly,  #eff6ff);
+$ana-input-primary-fg-readonly:  var(--ana-input-primary-fg-readonly,  #6b7280);
+$ana-input-primary-border-readonly: var(--ana-input-primary-border-readonly, #bfdbfe);
+
+// ─── Error / Warning (override both variants) ─────────────────────────────────
+$ana-input-bg-error:             var(--ana-input-bg-error,             #fef2f2);
+$ana-input-border-error:         var(--ana-input-border-error,         #dc2626);
+
+$ana-input-bg-warning:           var(--ana-input-bg-warning,           #fffbeb);
+$ana-input-border-warning:       var(--ana-input-border-warning,       #f59e0b);
+
+// ─── Structure ───────────────────────────────────────────────────────────────
+$ana-input-border-width:         var(--ana-border-width-thin,          1px);
+$ana-input-border-radius:        var(--ana-border-radius-subtle,       4px);
+$ana-input-focus-color:          var(--ana-border-focus,               #2563eb);
+
+// ─── Size: md ────────────────────────────────────────────────────────────────
+$ana-input-md-height:            var(--ana-box-size-md,                40px);
+$ana-input-md-padding-x:         var(--ana-box-padding-x-md,           12px);
+$ana-input-md-gap:               var(--ana-box-gap-md,                 8px);
+$ana-input-md-font-size:         var(--ana-typography-body-md-bold-font-size,   14px);
+$ana-input-md-font-weight:       var(--ana-typography-body-md-bold-font-weight, 500);
+$ana-input-md-line-height:       var(--ana-typography-body-md-bold-line-height, 1.5);
+
+// ─── Size: lg ────────────────────────────────────────────────────────────────
+$ana-input-lg-height:            var(--ana-box-size-lg,                48px);
+$ana-input-lg-padding-x:         var(--ana-box-padding-x-lg,           16px);
+$ana-input-lg-gap:               var(--ana-box-gap-lg,                 10px);
+$ana-input-lg-font-size:         var(--ana-typography-body-lg-bold-font-size,   16px);
+$ana-input-lg-font-weight:       var(--ana-typography-body-lg-bold-font-weight, 500);
+$ana-input-lg-line-height:       var(--ana-typography-body-lg-bold-line-height, 1.5);
+
+// ─── Size: xl ────────────────────────────────────────────────────────────────
+$ana-input-xl-height:            var(--ana-box-size-xl,                56px);
+$ana-input-xl-padding-x:         var(--ana-box-padding-x-xl,           20px);
+$ana-input-xl-gap:               var(--ana-box-gap-xl,                 12px);
+$ana-input-xl-font-size:         var(--ana-typography-body-xl-bold-font-size,   18px);
+$ana-input-xl-font-weight:       var(--ana-typography-body-xl-bold-font-weight, 500);
+$ana-input-xl-line-height:       var(--ana-typography-body-xl-bold-line-height, 1.5);
 
 // =============================================================================
-// Badge stories
+// Variant mixin — generates all interactive states for one variant
 // =============================================================================
-const badgeStories: Story[] = [
-  // ── Types × Variants ─────────────────────────────────────────────────────
-  {
-    meta: {
-      id: 'badge/types-variants',
-      name: 'Types & variants',
-      component: 'Badge',
-      description: 'All 4 types in both filled and outlined variants, md size.',
-    },
-    render: () => (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
-        {ALL_BADGE_VARIANTS.map(variant => (
-          <div key={variant}>
-            {badgeSectionTitle(variant)}
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-              {ALL_BADGE_TYPES.map(type => (
-                <div key={type} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                  <Badge
-                    label={type.charAt(0).toUpperCase() + type.slice(1)}
-                    iconLeft={typeIcon[type]}
-                    variant={variant}
-                    type={type}
-                  />
-                  {badgeLabel(type)}
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    ),
-  },
+@mixin input-variant(
+  $bg-rest,    $fg-rest,    $border-rest,
+  $bg-hover,   $fg-hover,   $border-hover,
+  $bg-focus,   $fg-focus,   $border-focus,
+  $bg-disabled,$fg-disabled,$border-disabled,
+  $bg-readonly,$fg-readonly,$border-readonly
+) {
+  background:   $bg-rest;
+  color:        $fg-rest;
+  border-color: $border-rest;
 
-  // ── Shapes ───────────────────────────────────────────────────────────────
-  {
-    meta: {
-      id: 'badge/shapes',
-      name: 'Shapes',
-      component: 'Badge',
-      description: 'Squared (border-radius-subtle) vs rounded (border-radius-circle) for all types.',
-    },
-    render: () => (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
-        {ALL_BADGE_SHAPES.map(shape => (
-          <div key={shape}>
-            {badgeSectionTitle(shape)}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {ALL_BADGE_VARIANTS.map(variant => (
-                <div key={variant} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 10, fontFamily: 'monospace', color: '#9ca3af', minWidth: 64 }}>{variant}</span>
-                  {ALL_BADGE_TYPES.map(type => (
-                    <Badge
-                      key={type}
-                      label={type.charAt(0).toUpperCase() + type.slice(1)}
-                      iconLeft={typeIcon[type]}
-                      variant={variant}
-                      type={type}
-                      shape={shape}
-                    />
-                  ))}
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    ),
-  },
+  &:hover:not([data-disabled]):not([data-readonly]):not(:focus-within) {
+    background:   $bg-hover;
+    color:        $fg-hover;
+    border-color: $border-hover;
+  }
 
-  // ── Sizes ────────────────────────────────────────────────────────────────
-  {
-    meta: {
-      id: 'badge/sizes',
-      name: 'Sizes',
-      component: 'Badge',
-      description: 'md and lg sizes across all types, filled + outlined.',
-    },
-    render: () => (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
-        {ALL_BADGE_SIZES.map(size => (
-          <div key={size}>
-            {badgeSectionTitle(`size: ${size}`)}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {ALL_BADGE_VARIANTS.map(variant => (
-                <div key={variant} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 10, fontFamily: 'monospace', color: '#9ca3af', minWidth: 64 }}>{variant}</span>
-                  {ALL_BADGE_TYPES.map(type => (
-                    <Badge
-                      key={type}
-                      label={type.charAt(0).toUpperCase() + type.slice(1)}
-                      iconLeft={typeIcon[type]}
-                      variant={variant}
-                      type={type}
-                      size={size}
-                    />
-                  ))}
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    ),
-  },
+  &:focus-within:not([data-disabled]):not([data-readonly]) {
+    background:   $bg-focus;
+    color:        $fg-focus;
+    border-color: $border-focus;
+    outline:        $ana-input-border-width solid $ana-input-focus-color;
+    outline-offset: 0;
+  }
 
-  // ── Icon combinations ─────────────────────────────────────────────────────
-  {
-    meta: {
-      id: 'badge/icon-combinations',
-      name: 'Icon combinations',
-      component: 'Badge',
-      description: 'No icon · left icon · right icon · both icons — across variants.',
-    },
-    render: () => {
-      const configs = [
-        { key: 'none',  label: 'No icon',     iconLeft: undefined,          iconRight: undefined          },
-        { key: 'left',  label: 'Icon left',    iconLeft: <CheckIcon />,      iconRight: undefined          },
-        { key: 'right', label: 'Icon right',   iconLeft: undefined,          iconRight: <CheckIcon />      },
-        { key: 'both',  label: 'Both icons',   iconLeft: <InfoIcon />,       iconRight: <CheckIcon />      },
-      ];
+  &[data-disabled] {
+    background:   $bg-disabled;
+    color:        $fg-disabled;
+    border-color: $border-disabled;
+    cursor:       not-allowed;
+    pointer-events: none;
+  }
 
-      return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
-          {ALL_BADGE_TYPES.map(type => (
-            <div key={type}>
-              {badgeSectionTitle(type)}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {ALL_BADGE_VARIANTS.map(variant => (
-                  <div key={variant} style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 10, fontFamily: 'monospace', color: '#9ca3af', minWidth: 64 }}>{variant}</span>
-                    {configs.map(cfg => (
-                      <div key={cfg.key} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                        <Badge
-                          label="Badge"
-                          iconLeft={cfg.iconLeft}
-                          iconRight={cfg.iconRight}
-                          variant={variant}
-                          type={type}
-                        />
-                        {badgeLabel(cfg.label)}
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      );
-    },
-  },
+  &[data-readonly] {
+    background:   $bg-readonly;
+    color:        $fg-readonly;
+    border-color: $border-readonly;
+  }
+}
 
-  // ── Full matrix: type × variant × size ────────────────────────────────────
-  {
-    meta: {
-      id: 'badge/matrix',
-      name: 'Full matrix',
-      component: 'Badge',
-      description: 'Every combination of type, variant, size, and shape.',
-    },
-    render: () => {
-      const colHeaders = ALL_BADGE_TYPES.flatMap(type =>
-        ALL_BADGE_VARIANTS.map(variant => ({ type, variant, key: `${type}-${variant}` }))
-      );
+// =============================================================================
+// Component
+// =============================================================================
 
-      return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-          {/* Column headers */}
-          <div style={{ display: 'grid', gridTemplateColumns: `100px repeat(${colHeaders.length}, 1fr)`, gap: 8, paddingBottom: 8, borderBottom: '1px solid #e5e7eb', marginBottom: 8 }}>
-            <div />
-            {colHeaders.map(({ type, variant, key }) => (
-              <div key={key} style={{ fontSize: 10, fontFamily: 'monospace', color: '#6b7280', textAlign: 'center' }}>
-                <div style={{ fontWeight: 700 }}>{type}</div>
-                <div>{variant}</div>
-              </div>
-            ))}
-          </div>
+.wrapper {
+  position:     relative;
+  display:      flex;
+  align-items:  center;
+  border:       $ana-input-border-width solid;
+  border-radius:$ana-input-border-radius;
+  outline:      $ana-input-border-width solid transparent;
+  outline-offset: 0;
+  transition:
+    background-color 0.15s ease,
+    border-color     0.15s ease,
+    color            0.15s ease,
+    outline-color    0.15s ease;
 
-          {/* Rows: size + shape */}
-          {ALL_BADGE_SIZES.flatMap(size =>
-            ALL_BADGE_SHAPES.map(shape => (
-              <div
-                key={`${size}-${shape}`}
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: `100px repeat(${colHeaders.length}, 1fr)`,
-                  gap: 8,
-                  alignItems: 'center',
-                  padding: '6px 0',
-                  borderBottom: '1px solid #f3f4f6',
-                }}
-              >
-                <div style={{ fontSize: 10, fontFamily: 'monospace', color: '#374151', fontWeight: 600 }}>
-                  <div>{size}</div>
-                  <div style={{ color: '#9ca3af' }}>{shape}</div>
-                </div>
-                {colHeaders.map(({ type, variant, key }) => (
-                  <div key={key} style={{ display: 'flex', justifyContent: 'center' }}>
-                    <Badge
-                      iconLeft={typeIcon[type]}
-                      label={type.slice(0, 3).toUpperCase()}
-                      variant={variant}
-                      type={type}
-                      size={size}
-                      shape={shape}
-                    />
-                  </div>
-                ))}
-              </div>
-            ))
-          )}
-        </div>
-      );
-    },
-  },
-];
+  // ── Default variant (no data-variant attr or data-variant="default") ──────
+  @include input-variant(
+    $ana-input-bg-rest,    $ana-input-fg-rest,    $ana-input-border-rest,
+    $ana-input-bg-hover,   $ana-input-fg-hover,   $ana-input-border-hover,
+    $ana-input-bg-focus,   $ana-input-fg-focus,   $ana-input-border-focus,
+    $ana-input-bg-disabled,$ana-input-fg-disabled,$ana-input-border-disabled,
+    $ana-input-bg-readonly,$ana-input-fg-readonly,$ana-input-border-readonly
+  );
 
-stories.push(...badgeStories);
+  // ── Primary variant ────────────────────────────────────────────────────────
+  &[data-variant="primary"] {
+    @include input-variant(
+      $ana-input-primary-bg-rest,    $ana-input-primary-fg-rest,    $ana-input-primary-border-rest,
+      $ana-input-primary-bg-hover,   $ana-input-primary-fg-hover,   $ana-input-primary-border-hover,
+      $ana-input-primary-bg-focus,   $ana-input-primary-fg-focus,   $ana-input-primary-border-focus,
+      $ana-input-primary-bg-disabled,$ana-input-primary-fg-disabled,$ana-input-primary-border-disabled,
+      $ana-input-primary-bg-readonly,$ana-input-primary-fg-readonly,$ana-input-primary-border-readonly
+    );
+  }
 
-export const storiesByComponent = stories.reduce<Record<string, Story[]>>(
-  (acc, story) => {
-    const key = story.meta.component;
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(story);
-    return acc;
-  },
-  {}
-);
+  // ── Error — overrides both variants ───────────────────────────────────────
+  &[data-state="error"]:not([data-disabled]) {
+    background:   $ana-input-bg-error;
+    border-color: $ana-input-border-error;
+
+    &:focus-within {
+      outline-color: $ana-input-border-error;
+      border-color:  $ana-input-border-error;
+    }
+  }
+
+  // ── Warning — overrides both variants ─────────────────────────────────────
+  &[data-state="warning"]:not([data-disabled]) {
+    background:   $ana-input-bg-warning;
+    border-color: $ana-input-border-warning;
+
+    &:focus-within {
+      outline-color: $ana-input-border-warning;
+      border-color:  $ana-input-border-warning;
+    }
+  }
+
+  // ── Sizes ──────────────────────────────────────────────────────────────────
+  &[data-size="md"] {
+    height:      $ana-input-md-height;
+    padding:     0 $ana-input-md-padding-x;
+    gap:         $ana-input-md-gap;
+    font-size:   $ana-input-md-font-size;
+    font-weight: $ana-input-md-font-weight;
+    line-height: $ana-input-md-line-height;
+
+    &[data-has-icon-left]   { padding-left:  calc(#{$ana-input-md-padding-x} / 4); }
+    &[data-has-icon-right]  { padding-right: calc(#{$ana-input-md-padding-x} / 4); }
+  }
+
+  &[data-size="lg"] {
+    height:      $ana-input-lg-height;
+    padding:     0 $ana-input-lg-padding-x;
+    gap:         $ana-input-lg-gap;
+    font-size:   $ana-input-lg-font-size;
+    font-weight: $ana-input-lg-font-weight;
+    line-height: $ana-input-lg-line-height;
+
+    &[data-has-icon-left]   { padding-left:  calc(#{$ana-input-lg-padding-x} / 4); }
+    &[data-has-icon-right]  { padding-right: calc(#{$ana-input-lg-padding-x} / 4); }
+  }
+
+  &[data-size="xl"] {
+    height:      $ana-input-xl-height;
+    padding:     0 $ana-input-xl-padding-x;
+    gap:         $ana-input-xl-gap;
+    font-size:   $ana-input-xl-font-size;
+    font-weight: $ana-input-xl-font-weight;
+    line-height: $ana-input-xl-line-height;
+
+    &[data-has-icon-left]   { padding-left:  calc(#{$ana-input-xl-padding-x} / 4); }
+    &[data-has-icon-right]  { padding-right: calc(#{$ana-input-xl-padding-x} / 4); }
+  }
+}
+
+// ── Actual <input> element ────────────────────────────────────────────────────
+.input {
+  flex:        1;
+  min-width:   0;
+  width:       100%;
+  border:      none;
+  outline:     none;
+  background:  transparent;
+  color:       inherit;
+  font-size:   inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  font-family: inherit;
+  padding:     0;
+
+  &::placeholder {
+    color:   currentColor;
+    opacity: 0.45;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+  }
+}
+
+// ── Icon slots ────────────────────────────────────────────────────────────────
+.iconSlot {
+  display:      inline-flex;
+  align-items:  center;
+  justify-content: center;
+  flex-shrink:  0;
+  color:        inherit;
+  // size applied in .iconSlotSm / Lg / Xl via wrapper size data attr below
+  width:        16px;
+  height:       16px;
+
+  svg {
+    width:  100%;
+    height: 100%;
+  }
+}
+
+.iconButton {
+  composes: iconSlot;
+  background:  transparent;
+  border:      none;
+  padding:     0;
+  cursor:      pointer;
+  color:       inherit;
+  border-radius: calc(#{$ana-input-border-radius} - 1px);
+  outline:     $ana-input-border-width solid transparent;
+  outline-offset: 0;
+
+  &:focus-visible {
+    outline-color: $ana-input-focus-color;
+  }
+
+  &:disabled {
+    cursor:  not-allowed;
+    opacity: 0.4;
+  }
+}
+
+// Icon size scales with wrapper size
+.wrapper[data-size="lg"] .iconSlot,
+.wrapper[data-size="lg"] .iconButton {
+  width:  18px;
+  height: 18px;
+}
+
+.wrapper[data-size="xl"] .iconSlot,
+.wrapper[data-size="xl"] .iconButton {
+  width:  20px;
+  height: 20px;
+}
+
+// ── Prefix / Suffix ──────────────────────────────────────────────────────────
+.prefix,
+.suffix {
+  flex-shrink:  0;
+  white-space:  nowrap;
+  color:        inherit;
+  opacity:      0.6;
+  user-select:  none;
+}
+
+// ── Clear button ─────────────────────────────────────────────────────────────
+.clearButton {
+  display:      inline-flex;
+  align-items:  center;
+  justify-content: center;
+  flex-shrink:  0;
+  width:        16px;
+  height:       16px;
+  background:   transparent;
+  border:       none;
+  padding:      0;
+  cursor:       pointer;
+  color:        inherit;
+  opacity:      0.45;
+  border-radius: 50%;
+  transition:   opacity 0.1s ease;
+
+  &:hover   { opacity: 1; }
+  &:focus-visible {
+    outline: $ana-input-border-width solid $ana-input-focus-color;
+    outline-offset: 0;
+    opacity: 1;
+  }
+
+  svg {
+    width:  100%;
+    height: 100%;
+  }
+}
+
+.wrapper[data-size="lg"] .clearButton {
+  width:  18px;
+  height: 18px;
+}
+
+.wrapper[data-size="xl"] .clearButton {
+  width:  20px;
+  height: 20px;
+}
