@@ -1,543 +1,615 @@
+// Returns a ranked list of complete RIC strings that would complete the current input.
+
+const CCYS    = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'CAD', 'NZD', 'HKD', 'SGD', 'NOK', 'SEK'];
+const TENORS  = ['ON', 'TN', 'SN', 'SP', '1W', '2W', '1M', '2M', '3M', '6M', '9M', '1Y', '2Y'];
+const MM_TENORS = ['1W', '2W', '1M', '2M', '3M', '6M', '9M', '1Y', '2Y'];
+const SWAP_NEAR = ['SP', 'ON', 'TN', 'SN'];
+const SWAP_FAR  = ['1W', '1M', '2M', '3M', '6M', '9M', '1Y'];
+
+function defaultQuote(base: string): string {
+  return base === 'USD' ? 'EUR' : 'USD';
+}
+
+function orderedQuotes(base: string): string[] {
+  const def = defaultQuote(base);
+  return [def, ...CCYS.filter(c => c !== base && c !== def)];
+}
+
+export function getSuggestions(value: string): string[] {
+  const s = value.trim();
+  if (!s) return [];
+
+  // ── Money Market ────────────────────────────────────────────────────────────
+  if (/^[Dd]$/i.test(s)) {
+    return CCYS.slice(0, 6).map(c => `D.${c}.`);
+  }
+  if (/^[Dd]\.$/.test(s)) {
+    return CCYS.slice(0, 6).map(c => `D.${c}.`);
+  }
+  const mmCcyPartial = s.match(/^[Dd]\.([A-Za-z]{1,2})$/i);
+  if (mmCcyPartial) {
+    const p = mmCcyPartial[1].toUpperCase();
+    return CCYS.filter(c => c.startsWith(p)).map(c => `D.${c}.`);
+  }
+  const mmCcyDone = s.match(/^[Dd]\.([A-Za-z]{3})\.?$/i);
+  if (mmCcyDone) {
+    const ccy = mmCcyDone[1].toUpperCase();
+    return MM_TENORS.map(t => `D.${ccy}.${t}`);
+  }
+  const mmTenorPartial = s.match(/^[Dd]\.([A-Za-z]{3})\.([A-Za-z0-9]+)$/i);
+  if (mmTenorPartial) {
+    const ccy = mmTenorPartial[1].toUpperCase();
+    const p   = mmTenorPartial[2].toUpperCase();
+    return MM_TENORS.filter(t => t.startsWith(p) && t !== p).map(t => `D.${ccy}.${t}`);
+  }
+
+  // ── FX ─────────────────────────────────────────────────────────────────────
+  const fxM = s.match(/^([A-Za-z]*)(.*)$/);
+  if (!fxM) return [];
+
+  const alpha = fxM[1];
+  const rest  = fxM[2];
+  if (!alpha) return [];
+
+  // 3-char CCY + non-alpha suffix (e.g. GBP1M, GBP221107):
+  // expand to full pair and delegate, so suggestions show e.g. GBPUSD1M.
+  if (alpha.length <= 3 && rest && /^[^A-Za-z]/.test(rest)) {
+    return getSuggestions(alpha.toUpperCase() + 'USD' + rest);
+  }
+
+  // 1–3 chars: completing the base CCY or suggesting pairs
+  if (alpha.length <= 3 && !rest) {
+    const p = alpha.toUpperCase();
+    const matching = CCYS.filter(c => c.startsWith(p));
+    if (!matching.length) return [];
+    const out: string[] = [];
+    for (const base of matching) {
+      for (const q of orderedQuotes(base)) {
+        out.push(base + q);
+        if (out.length >= 8) return out;
+      }
+    }
+    return out;
+  }
+
+  // 4–5 chars: completing the quote CCY
+  if (alpha.length >= 4 && alpha.length <= 5 && !rest) {
+    const base = alpha.slice(0, 3).toUpperCase();
+    const p    = alpha.slice(3).toUpperCase();
+    return CCYS.filter(c => c !== base && c.startsWith(p)).map(c => base + c);
+  }
+
+  // 6+ chars: full pair + legs
+  if (alpha.length >= 6) {
+    const pair = alpha.slice(0, 6).toUpperCase();
+    // Anything past 6 alpha chars belongs to the legs, not the pair.
+    const legs = alpha.slice(6) + rest;
+
+    // Nothing typed after the pair — offer outrights + common swaps
+    if (!legs) {
+      const swapSugs = SWAP_NEAR.flatMap(near =>
+        SWAP_FAR.slice(0, 2).map(far => `${pair}${near}*${far}`)
+      );
+      return [...TENORS.map(t => pair + t), ...swapSugs].slice(0, 12);
+    }
+
+    const starIdx = legs.indexOf('*');
+
+    // Swap: near leg + `*` + partial far leg
+    if (starIdx !== -1) {
+      const near       = legs.slice(0, starIdx);
+      const farPartial = legs.slice(starIdx + 1).toUpperCase();
+      if (!farPartial) return SWAP_FAR.map(far => `${pair}${near}*${far}`);
+      return TENORS.filter(t => t.startsWith(farPartial) && t !== farPartial)
+                   .map(far => `${pair}${near}*${far}`);
+    }
+
+    const legsUp = legs.toUpperCase();
+
+    // Partial tenor or start of swap near leg
+    const tenorMatches = TENORS.filter(t => t.startsWith(legsUp) && t !== legsUp);
+    if (tenorMatches.length) return tenorMatches.map(t => pair + t);
+
+    // Near leg is complete — suggest swap forms
+    const nearMatch = SWAP_NEAR.find(n => n === legsUp);
+    if (nearMatch) {
+      return SWAP_FAR.map(far => `${pair}${nearMatch}*${far}`);
+    }
+  }
+
+  return [];
+}
+
+
+// =============================================================================
+// RIC (Reuters Instrument Code) shorthand parser
+//
+// Supported forms:
+//   FX Spot:      GBPUSD
+//   FX Outright:  GBPUSD6M  |  GBPUSD221107
+//   FX Swap:      GBPUSDSP*6M  |  GBPUSDSP*221107  |  GBPUSD21Sep12*3M
+//   Money Market: D.GBP.6M
+//
+// Date formats accepted in a leg:
+//   Tenors:   ON TN SN SP  |  1D 1W 2M 6M 1Y …
+//   Numeric:  DDMM  DDMMYY  DDMMYYYY  YYYYMMDD
+//   Sep'd:    DD-MM  DD/MM  DD-MM-YY  DD/MM/YYYY …
+//   Mon-name: DDMon  DD-Mon  DD/Mon  DD Mon
+//             DDMonYY  DDMonYYYY  DD-Mon-YYYY  DD Mon YYYY …
+//   IMM:      Sep IMM  Dec imm  SepIMM …
+// =============================================================================
+
+const MONTHS_MAP: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+const MONTH_SHORT = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+export type RICLegType = 'tenor' | 'date' | 'imm';
+
+export interface RICLeg {
+  raw: string;
+  type: RICLegType;
+  display: string;
+  // tenor
+  tenor?: string;
+  // date
+  day?: number;
+  month?: number;
+  year?: number;
+  // imm
+  immMonth?: string;
+}
+
+export type RICInstrumentType = 'fx-spot' | 'fx-outright' | 'fx-swap' | 'money-market';
+
+export interface ParsedRIC {
+  raw: string;
+  type: RICInstrumentType;
+  display: string;
+  // FX
+  currencyPair?: string;
+  baseCurrency?: string;
+  quoteCurrency?: string;
+  leg1?: RICLeg;
+  leg2?: RICLeg;
+  // Money Market
+  currency?: string;
+  tenor?: RICLeg;
+}
+
+export type RICParseResult =
+  | { ok: true; ric: ParsedRIC }
+  | { ok: false; error: string };
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function monthNum(s: string): number | null {
+  return MONTHS_MAP[s.toLowerCase()] ?? null;
+}
+
+function resolveYY(yy: number): number {
+  return yy >= 50 ? 1900 + yy : 2000 + yy;
+}
+
+function fmtDate(d: number, m: number, y?: number): string {
+  const ds  = String(d).padStart(2, '0');
+  const mon = MONTH_SHORT[m] ?? '?';
+  return y != null ? `${ds} ${mon} ${y}` : `${ds} ${mon}`;
+}
+
+function dateLeg(raw: string, d: number, m: number, y?: number): RICLeg | null {
+  if (d < 1 || d > 31 || m < 1 || m > 12) return null;
+  return { raw, type: 'date', display: fmtDate(d, m, y), day: d, month: m, year: y };
+}
+
+// ── Single-leg parser ─────────────────────────────────────────────────────────
+
+export function parseLeg(raw: string): RICLeg | null {
+  const s = raw.trim();
+  if (!s) return null;
+
+  // ── Tenors: ON TN SN SP  |  Nd NW NM NY ─────────────────────────────────
+  if (/^(ON|TN|SN|SP)$/i.test(s)) {
+    const t = s.toUpperCase();
+    return { raw, type: 'tenor', display: t, tenor: t };
+  }
+  const tenorM = s.match(/^(\d+)(D|W|M|Y)$/i);
+  if (tenorM) {
+    const t = `${tenorM[1]}${tenorM[2].toUpperCase()}`;
+    return { raw, type: 'tenor', display: t, tenor: t };
+  }
+
+  // ── IMM: "Sep IMM", "SepIMM", case-insensitive ────────────────────────────
+  const immM = s.match(/^([A-Za-z]{3})\s*IMM$/i);
+  if (immM) {
+    const mn = monthNum(immM[1]);
+    if (mn != null) {
+      const mon = MONTH_SHORT[mn];
+      return { raw, type: 'imm', display: `${mon} IMM`, immMonth: mon, month: mn };
+    }
+  }
+
+  // ── Pure-numeric dates ────────────────────────────────────────────────────
+
+  if (/^\d{8}$/.test(s)) {
+    // Try YYYYMMDD first (Bloomberg standard)
+    const yY = +s.slice(0, 4), mY = +s.slice(4, 6), dY = +s.slice(6, 8);
+    if (yY >= 1900 && yY <= 2099) {
+      const leg = dateLeg(raw, dY, mY, yY);
+      if (leg) return leg;
+    }
+    // Fall back to DDMMYYYY
+    return dateLeg(raw, +s.slice(0, 2), +s.slice(2, 4), +s.slice(4, 8));
+  }
+
+  if (/^\d{6}$/.test(s)) {
+    // DDMMYY
+    return dateLeg(raw, +s.slice(0, 2), +s.slice(2, 4), resolveYY(+s.slice(4, 6)));
+  }
+
+  if (/^\d{4}$/.test(s)) {
+    // DDMM
+    return dateLeg(raw, +s.slice(0, 2), +s.slice(2, 4));
+  }
+
+  // ── Separator-based (DD-MM … DD/MM/YYYY) ─────────────────────────────────
+
+  let m = s.match(/^(\d{1,2})[-\/](\d{1,2})$/);
+  if (m) return dateLeg(raw, +m[1], +m[2]);
+
+  m = s.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{2,4})$/);
+  if (m) {
+    const y = m[3].length === 2 ? resolveYY(+m[3]) : +m[3];
+    return dateLeg(raw, +m[1], +m[2], y);
+  }
+
+  // ── Month-name dates ──────────────────────────────────────────────────────
+
+  // DDMon — e.g. 21Sep  04Jan
+  m = s.match(/^(\d{1,2})([A-Za-z]{3})$/);
+  if (m) {
+    const mn = monthNum(m[2]);
+    if (mn != null) return dateLeg(raw, +m[1], mn);
+  }
+
+  // DDMonYY / DDMonYYYY — e.g. 21Sep12  21Sep2012
+  m = s.match(/^(\d{1,2})([A-Za-z]{3})(\d{2,4})$/);
+  if (m) {
+    const mn = monthNum(m[2]);
+    if (mn != null) {
+      const y = m[3].length === 2 ? resolveYY(+m[3]) : +m[3];
+      return dateLeg(raw, +m[1], mn, y);
+    }
+  }
+
+  // DD-Mon / DD/Mon — e.g. 21-Sep  21/Sep
+  m = s.match(/^(\d{1,2})[-\/]([A-Za-z]{3})$/);
+  if (m) {
+    const mn = monthNum(m[2]);
+    if (mn != null) return dateLeg(raw, +m[1], mn);
+  }
+
+  // DD-Mon-YY / DD-Mon-YYYY / DD/Mon/YY / DD/Mon/YYYY
+  m = s.match(/^(\d{1,2})[-\/]([A-Za-z]{3})[-\/](\d{2,4})$/);
+  if (m) {
+    const mn = monthNum(m[2]);
+    if (mn != null) {
+      const y = m[3].length === 2 ? resolveYY(+m[3]) : +m[3];
+      return dateLeg(raw, +m[1], mn, y);
+    }
+  }
+
+  // DD Mon — e.g. "04 Jan"
+  m = s.match(/^(\d{1,2})\s([A-Za-z]{3})$/);
+  if (m) {
+    const mn = monthNum(m[2]);
+    if (mn != null) return dateLeg(raw, +m[1], mn);
+  }
+
+  // DD Mon YY / DD Mon YYYY — e.g. "21 Sep 12"  "21 Sep 2012"
+  m = s.match(/^(\d{1,2})\s([A-Za-z]{3})\s(\d{2,4})$/);
+  if (m) {
+    const mn = monthNum(m[2]);
+    if (mn != null) {
+      const y = m[3].length === 2 ? resolveYY(+m[3]) : +m[3];
+      return dateLeg(raw, +m[1], mn, y);
+    }
+  }
+
+  return null;
+}
+
+// ── Top-level RIC parser ──────────────────────────────────────────────────────
+
+export function parseRIC(raw: string): RICParseResult {
+  const s = raw.trim();
+  if (!s) return { ok: false, error: 'Empty input' };
+
+  // Money Market: D.CCY.tenor
+  const mmM = s.match(/^[Dd]\.([A-Za-z]{3})\.(.+)$/);
+  if (mmM) {
+    const ccy = mmM[1].toUpperCase();
+    const tenorLeg = parseLeg(mmM[2]);
+    if (!tenorLeg || tenorLeg.type !== 'tenor') {
+      return { ok: false, error: `Invalid MM tenor: "${mmM[2]}"` };
+    }
+    return {
+      ok: true,
+      ric: {
+        raw,
+        type: 'money-market',
+        display: `MM Deposit · ${ccy} · ${tenorLeg.display}`,
+        currency: ccy,
+        tenor: tenorLeg,
+      },
+    };
+  }
+
+  // 3-char CCY shorthand — optionally followed by a tenor/date suffix:
+  //   GBP      → GBPUSD   (spot)
+  //   GBP1M    → GBPUSD1M (outright)
+  //   GBP221107 → GBPUSD221107
+  // Only matches when the 4th character is non-alpha (or absent), so partial pairs
+  // like "GBPU" fall through to the error path instead of expanding incorrectly.
+  if (/^[A-Za-z]{3}([^A-Za-z].*)?$/.test(s)) {
+    const ccy    = s.slice(0, 3).toUpperCase();
+    const suffix = s.slice(3);
+    return parseRIC(ccy + 'USD' + suffix);
+  }
+
+  // FX: must begin with exactly 6 alpha chars (the currency pair)
+  const fxM = s.match(/^([A-Za-z]{6})(.*)$/);
+  if (!fxM) return { ok: false, error: 'Unrecognised format — expected CCYCCY or D.CCY.tenor' };
+
+  const pair  = fxM[1].toUpperCase();
+  const base  = pair.slice(0, 3);
+  const quote = pair.slice(3);
+  const rest  = fxM[2].trim();
+
+  // Spot
+  if (!rest) {
+    return {
+      ok: true,
+      ric: {
+        raw,
+        type: 'fx-spot',
+        display: `FX Spot · ${base}/${quote}`,
+        currencyPair: pair,
+        baseCurrency: base,
+        quoteCurrency: quote,
+      },
+    };
+  }
+
+  // Swap: contains '*' separating near and far leg
+  const starIdx = rest.indexOf('*');
+  if (starIdx !== -1) {
+    const nearRaw = rest.slice(0, starIdx);
+    const farRaw  = rest.slice(starIdx + 1);
+    const near = parseLeg(nearRaw);
+    const far  = parseLeg(farRaw);
+    if (!near) return { ok: false, error: `Invalid near leg: "${nearRaw || '(empty)'}"` };
+    if (!far)  return { ok: false, error: `Invalid far leg: "${farRaw  || '(empty)'}"` };
+    return {
+      ok: true,
+      ric: {
+        raw,
+        type: 'fx-swap',
+        display: `FX Swap · ${base}/${quote} · ${near.display} → ${far.display}`,
+        currencyPair: pair,
+        baseCurrency: base,
+        quoteCurrency: quote,
+        leg1: near,
+        leg2: far,
+      },
+    };
+  }
+
+  // Outright: rest is the single far-leg tenor/date
+  const leg = parseLeg(rest);
+  if (!leg) return { ok: false, error: `Invalid date/tenor: "${rest}"` };
+  return {
+    ok: true,
+    ric: {
+      raw,
+      type: 'fx-outright',
+      display: `FX Outright · ${base}/${quote} · ${leg.display}`,
+      currencyPair: pair,
+      baseCurrency: base,
+      quoteCurrency: quote,
+      leg2: leg,
+    },
+  };
+}
 import {
   forwardRef,
   useState,
   useCallback,
-  type InputHTMLAttributes,
-  type MouseEventHandler,
-  type ReactNode,
+  useEffect,
+  useRef,
+  type KeyboardEventHandler,
 } from 'react';
-import styles from './Input.module.scss';
+import { Input } from '../Input';
+import type { InputProps } from '../Input';
+import { parseRIC } from './parseRIC';
+import type { RICParseResult } from './parseRIC';
+import { getSuggestions } from './getSuggestions';
+import styles from './RICInput.module.scss';
 
-export type InputVariant = 'default' | 'primary';
-export type InputSize    = 'md' | 'lg' | 'xl';
-
-export interface InputProps
-  extends Omit<InputHTMLAttributes<HTMLInputElement>, 'className' | 'size'> {
-  /** Visual style variant. Defaults to "default". */
-  variant?: InputVariant;
-  /** Size scale. Defaults to "md". */
-  size?: InputSize;
-  /** Puts the input into an error state (overrides variant colours). */
-  error?: boolean;
-  /** Puts the input into a warning state (overrides variant colours). */
-  warning?: boolean;
-  /** Static text rendered before the input text. */
-  prefix?: string;
-  /** Static text rendered after the input text. */
-  suffix?: string;
-  /** Icon element rendered on the left edge. */
-  iconLeft?: ReactNode;
-  /** Icon element rendered on the right edge. */
-  iconRight?: ReactNode;
-  /** Click handler for the left icon — renders it as a <button> when provided. */
-  onIconLeftClick?: MouseEventHandler<HTMLButtonElement>;
-  /** Click handler for the right icon — renders it as a <button> when provided. */
-  onIconRightClick?: MouseEventHandler<HTMLButtonElement>;
-  /** Shows an × button to clear the input when a value is present. */
-  clearable?: boolean;
-  /** Called when the clear button is clicked. Use this to reset controlled state. */
-  onClear?: () => void;
+export interface RICInputProps extends Omit<InputProps, 'error'> {
+  /** Called whenever the value changes, with the latest parse result. */
+  onParsed?: (result: RICParseResult) => void;
+  /** Show the resolved instrument label below the input. Defaults to true. */
+  showResolved?: boolean;
 }
 
-const ClearIcon = () => (
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-    <path d="M4 4l8 8M12 4l-8 8" />
-  </svg>
-);
-
-export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
-  {
-    variant   = 'default',
-    size      = 'md',
-    error     = false,
-    warning   = false,
-    prefix,
-    suffix,
-    iconLeft,
-    iconRight,
-    onIconLeftClick,
-    onIconRightClick,
-    clearable = false,
-    onClear,
-    disabled,
-    readOnly,
-    value,
-    defaultValue,
-    onChange,
-    ...rest
-  },
-  ref,
-) {
-  // Track value locally so the clear button knows when to appear.
-  const [localValue, setLocalValue] = useState<string>(
-    (value ?? defaultValue ?? '') as string,
-  );
-
-  // Keep localValue in sync when the controlled value changes.
-  const handleChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      setLocalValue(e.target.value);
-      onChange?.(e);
+export const RICInput = forwardRef<HTMLInputElement, RICInputProps>(
+  function RICInput(
+    {
+      onParsed,
+      showResolved = true,
+      value,
+      defaultValue,
+      onChange,
+      onKeyDown,
+      onClear,
+      ...rest
     },
-    [onChange],
-  );
-
-  const handleClear = useCallback(() => {
-    setLocalValue('');
-    onClear?.();
-    // For controlled inputs the consumer resets via onClear.
-    // For uncontrolled inputs we need to reset the DOM node directly.
-    if (!onClear && ref && typeof ref === 'object' && ref.current) {
-      ref.current.value = '';
-      ref.current.focus();
-    }
-  }, [onClear, ref]);
-
-  // Derive the displayed value for the clear-button visibility check.
-  const displayValue  = value !== undefined ? (value as string) : localValue;
-  const showClear     = clearable && Boolean(displayValue) && !disabled && !readOnly;
-
-  const state = error ? 'error' : warning ? 'warning' : undefined;
-
-  return (
-    <div
-      className={styles.wrapper}
-      data-variant={variant}
-      data-size={size}
-      data-state={state}
-      data-disabled={disabled || undefined}
-      data-readonly={readOnly || undefined}
-      data-has-icon-left={iconLeft ? '' : undefined}
-      data-has-icon-right={iconRight ? '' : undefined}
-    >
-      {/* Left icon */}
-      {iconLeft && (
-        onIconLeftClick ? (
-          <button
-            type="button"
-            className={styles.iconButton}
-            onClick={onIconLeftClick}
-            disabled={disabled}
-            tabIndex={disabled ? -1 : 0}
-            aria-label="Left action"
-          >
-            {iconLeft}
-          </button>
-        ) : (
-          <span className={styles.iconSlot} aria-hidden="true">
-            {iconLeft}
-          </span>
-        )
-      )}
-
-      {/* String prefix */}
-      {prefix && (
-        <span className={styles.prefix}>{prefix}</span>
-      )}
-
-      {/* Input */}
-      <input
-        ref={ref}
-        className={styles.input}
-        disabled={disabled}
-        readOnly={readOnly}
-        value={value}
-        defaultValue={value === undefined ? defaultValue : undefined}
-        onChange={handleChange}
-        {...rest}
-      />
-
-      {/* String suffix */}
-      {suffix && (
-        <span className={styles.suffix}>{suffix}</span>
-      )}
-
-      {/* Clear button */}
-      {showClear && (
-        <button
-          type="button"
-          className={styles.clearButton}
-          onClick={handleClear}
-          tabIndex={0}
-          aria-label="Clear input"
-        >
-          <ClearIcon />
-        </button>
-      )}
-
-      {/* Right icon */}
-      {iconRight && (
-        onIconRightClick ? (
-          <button
-            type="button"
-            className={styles.iconButton}
-            onClick={onIconRightClick}
-            disabled={disabled}
-            tabIndex={disabled ? -1 : 0}
-            aria-label="Right action"
-          >
-            {iconRight}
-          </button>
-        ) : (
-          <span className={styles.iconSlot} aria-hidden="true">
-            {iconRight}
-          </span>
-        )
-      )}
-    </div>
-  );
-});
-
-
-// =============================================================================
-// Input — CSS Module
-// All dynamic state is driven via data attributes on .wrapper.
-// Naming: $ana-input-{variant?}-{location}-{state}
-// =============================================================================
-
-// ─── Default variant ─────────────────────────────────────────────────────────
-$ana-input-bg-rest:              var(--ana-input-bg-rest,              #ffffff);
-$ana-input-fg-rest:              var(--ana-input-fg-rest,              #111827);
-$ana-input-border-rest:          var(--ana-input-border-rest,          #d1d5db);
-
-$ana-input-bg-hover:             var(--ana-input-bg-hover,             #f9fafb);
-$ana-input-fg-hover:             var(--ana-input-fg-hover,             #111827);
-$ana-input-border-hover:         var(--ana-input-border-hover,         #9ca3af);
-
-$ana-input-bg-focus:             var(--ana-input-bg-focus,             #ffffff);
-$ana-input-fg-focus:             var(--ana-input-fg-focus,             #111827);
-$ana-input-border-focus:         var(--ana-input-border-focus,         #2563eb);
-
-$ana-input-bg-disabled:          var(--ana-input-bg-disabled,          #f3f4f6);
-$ana-input-fg-disabled:          var(--ana-input-fg-disabled,          #9ca3af);
-$ana-input-border-disabled:      var(--ana-input-border-disabled,      #e5e7eb);
-
-$ana-input-bg-readonly:          var(--ana-input-bg-readonly,          #f9fafb);
-$ana-input-fg-readonly:          var(--ana-input-fg-readonly,          #6b7280);
-$ana-input-border-readonly:      var(--ana-input-border-readonly,      #e5e7eb);
-
-// ─── Primary variant ─────────────────────────────────────────────────────────
-$ana-input-primary-bg-rest:      var(--ana-input-primary-bg-rest,      #ffffff);
-$ana-input-primary-fg-rest:      var(--ana-input-primary-fg-rest,      #111827);
-$ana-input-primary-border-rest:  var(--ana-input-primary-border-rest,  #2563eb);
-
-$ana-input-primary-bg-hover:     var(--ana-input-primary-bg-hover,     #eff6ff);
-$ana-input-primary-fg-hover:     var(--ana-input-primary-fg-hover,     #111827);
-$ana-input-primary-border-hover: var(--ana-input-primary-border-hover, #1d4ed8);
-
-$ana-input-primary-bg-focus:     var(--ana-input-primary-bg-focus,     #ffffff);
-$ana-input-primary-fg-focus:     var(--ana-input-primary-fg-focus,     #111827);
-$ana-input-primary-border-focus: var(--ana-input-primary-border-focus, #2563eb);
-
-$ana-input-primary-bg-disabled:  var(--ana-input-primary-bg-disabled,  #f3f4f6);
-$ana-input-primary-fg-disabled:  var(--ana-input-primary-fg-disabled,  #9ca3af);
-$ana-input-primary-border-disabled: var(--ana-input-primary-border-disabled, #bfdbfe);
-
-$ana-input-primary-bg-readonly:  var(--ana-input-primary-bg-readonly,  #eff6ff);
-$ana-input-primary-fg-readonly:  var(--ana-input-primary-fg-readonly,  #6b7280);
-$ana-input-primary-border-readonly: var(--ana-input-primary-border-readonly, #bfdbfe);
-
-// ─── Error / Warning (override both variants) ─────────────────────────────────
-$ana-input-bg-error:             var(--ana-input-bg-error,             #fef2f2);
-$ana-input-border-error:         var(--ana-input-border-error,         #dc2626);
-
-$ana-input-bg-warning:           var(--ana-input-bg-warning,           #fffbeb);
-$ana-input-border-warning:       var(--ana-input-border-warning,       #f59e0b);
-
-// ─── Structure ───────────────────────────────────────────────────────────────
-$ana-input-border-width:         var(--ana-border-width-thin,          1px);
-$ana-input-border-radius:        var(--ana-border-radius-subtle,       4px);
-$ana-input-focus-color:          var(--ana-border-focus,               #2563eb);
-
-// ─── Size: md ────────────────────────────────────────────────────────────────
-$ana-input-md-height:            var(--ana-box-size-md,                40px);
-$ana-input-md-padding-x:         var(--ana-box-padding-x-md,           12px);
-$ana-input-md-gap:               var(--ana-box-gap-md,                 8px);
-$ana-input-md-font-size:         var(--ana-typography-body-md-bold-font-size,   14px);
-$ana-input-md-font-weight:       var(--ana-typography-body-md-bold-font-weight, 500);
-$ana-input-md-line-height:       var(--ana-typography-body-md-bold-line-height, 1.5);
-
-// ─── Size: lg ────────────────────────────────────────────────────────────────
-$ana-input-lg-height:            var(--ana-box-size-lg,                48px);
-$ana-input-lg-padding-x:         var(--ana-box-padding-x-lg,           16px);
-$ana-input-lg-gap:               var(--ana-box-gap-lg,                 10px);
-$ana-input-lg-font-size:         var(--ana-typography-body-lg-bold-font-size,   16px);
-$ana-input-lg-font-weight:       var(--ana-typography-body-lg-bold-font-weight, 500);
-$ana-input-lg-line-height:       var(--ana-typography-body-lg-bold-line-height, 1.5);
-
-// ─── Size: xl ────────────────────────────────────────────────────────────────
-$ana-input-xl-height:            var(--ana-box-size-xl,                56px);
-$ana-input-xl-padding-x:         var(--ana-box-padding-x-xl,           20px);
-$ana-input-xl-gap:               var(--ana-box-gap-xl,                 12px);
-$ana-input-xl-font-size:         var(--ana-typography-body-xl-bold-font-size,   18px);
-$ana-input-xl-font-weight:       var(--ana-typography-body-xl-bold-font-weight, 500);
-$ana-input-xl-line-height:       var(--ana-typography-body-xl-bold-line-height, 1.5);
-
-// =============================================================================
-// Variant mixin — generates all interactive states for one variant
-// =============================================================================
-@mixin input-variant(
-  $bg-rest,    $fg-rest,    $border-rest,
-  $bg-hover,   $fg-hover,   $border-hover,
-  $bg-focus,   $fg-focus,   $border-focus,
-  $bg-disabled,$fg-disabled,$border-disabled,
-  $bg-readonly,$fg-readonly,$border-readonly
-) {
-  background:   $bg-rest;
-  color:        $fg-rest;
-  border-color: $border-rest;
-
-  &:hover:not([data-disabled]):not([data-readonly]):not(:focus-within) {
-    background:   $bg-hover;
-    color:        $fg-hover;
-    border-color: $border-hover;
-  }
-
-  &:focus-within:not([data-disabled]):not([data-readonly]) {
-    background:   $bg-focus;
-    color:        $fg-focus;
-    border-color: $border-focus;
-    outline:        $ana-input-border-width solid $ana-input-focus-color;
-    outline-offset: 0;
-  }
-
-  &[data-disabled] {
-    background:   $bg-disabled;
-    color:        $fg-disabled;
-    border-color: $border-disabled;
-    cursor:       not-allowed;
-    pointer-events: none;
-  }
-
-  &[data-readonly] {
-    background:   $bg-readonly;
-    color:        $fg-readonly;
-    border-color: $border-readonly;
-  }
-}
-
-// =============================================================================
-// Component
-// =============================================================================
-
-.wrapper {
-  position:     relative;
-  display:      flex;
-  align-items:  center;
-  border:       $ana-input-border-width solid;
-  border-radius:$ana-input-border-radius;
-  outline:      $ana-input-border-width solid transparent;
-  outline-offset: 0;
-  transition:
-    background-color 0.15s ease,
-    border-color     0.15s ease,
-    color            0.15s ease,
-    outline-color    0.15s ease;
-
-  // ── Default variant (no data-variant attr or data-variant="default") ──────
-  @include input-variant(
-    $ana-input-bg-rest,    $ana-input-fg-rest,    $ana-input-border-rest,
-    $ana-input-bg-hover,   $ana-input-fg-hover,   $ana-input-border-hover,
-    $ana-input-bg-focus,   $ana-input-fg-focus,   $ana-input-border-focus,
-    $ana-input-bg-disabled,$ana-input-fg-disabled,$ana-input-border-disabled,
-    $ana-input-bg-readonly,$ana-input-fg-readonly,$ana-input-border-readonly
-  );
-
-  // ── Primary variant ────────────────────────────────────────────────────────
-  &[data-variant="primary"] {
-    @include input-variant(
-      $ana-input-primary-bg-rest,    $ana-input-primary-fg-rest,    $ana-input-primary-border-rest,
-      $ana-input-primary-bg-hover,   $ana-input-primary-fg-hover,   $ana-input-primary-border-hover,
-      $ana-input-primary-bg-focus,   $ana-input-primary-fg-focus,   $ana-input-primary-border-focus,
-      $ana-input-primary-bg-disabled,$ana-input-primary-fg-disabled,$ana-input-primary-border-disabled,
-      $ana-input-primary-bg-readonly,$ana-input-primary-fg-readonly,$ana-input-primary-border-readonly
+    ref,
+  ) {
+    // Always manage value internally so we can write suggestions into it.
+    const [internalValue, setInternalValue] = useState(
+      (value ?? defaultValue ?? '') as string,
     );
-  }
 
-  // ── Error — overrides both variants ───────────────────────────────────────
-  &[data-state="error"]:not([data-disabled]) {
-    background:   $ana-input-bg-error;
-    border-color: $ana-input-border-error;
+    // Sync when the controlled value changes from outside.
+    useEffect(() => {
+      if (value !== undefined) setInternalValue(value as string);
+    }, [value]);
 
-    &:focus-within {
-      outline-color: $ana-input-border-error;
-      border-color:  $ana-input-border-error;
-    }
-  }
+    // Suggestions state.
+    const [suggestions, setSuggestions] = useState<string[]>([]);
+    const [activeIdx, setActiveIdx]     = useState(-1);
+    const [open, setOpen]               = useState(false);
+    const wrapperRef = useRef<HTMLDivElement>(null);
 
-  // ── Warning — overrides both variants ─────────────────────────────────────
-  &[data-state="warning"]:not([data-disabled]) {
-    background:   $ana-input-bg-warning;
-    border-color: $ana-input-border-warning;
+    // Recompute suggestions whenever the value changes.
+    useEffect(() => {
+      const sugs = getSuggestions(internalValue);
+      setSuggestions(sugs);
+      setActiveIdx(-1);
+      setOpen(sugs.length > 0);
+    }, [internalValue]);
 
-    &:focus-within {
-      outline-color: $ana-input-border-warning;
-      border-color:  $ana-input-border-warning;
-    }
-  }
+    // Parse result for the resolved label + error state.
+    const parseResult = internalValue ? parseRIC(internalValue) : null;
 
-  // ── Sizes ──────────────────────────────────────────────────────────────────
-  &[data-size="md"] {
-    height:      $ana-input-md-height;
-    padding:     0 $ana-input-md-padding-x;
-    gap:         $ana-input-md-gap;
-    font-size:   $ana-input-md-font-size;
-    font-weight: $ana-input-md-font-weight;
-    line-height: $ana-input-md-line-height;
+    useEffect(() => {
+      if (internalValue && onParsed) onParsed(parseRIC(internalValue));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [internalValue]);
 
-    &[data-has-icon-left]   { padding-left:  calc(#{$ana-input-md-padding-x} / 4); }
-    &[data-has-icon-right]  { padding-right: calc(#{$ana-input-md-padding-x} / 4); }
-  }
+    // Accept a suggestion: write it into the value and close the dropdown.
+    const accept = useCallback(
+      (suggestion: string) => {
+        setInternalValue(suggestion);
+        setOpen(false);
+        // Notify consumers via a lightweight synthetic event.
+        onChange?.({ target: { value: suggestion } } as React.ChangeEvent<HTMLInputElement>);
+        if (onParsed && suggestion) onParsed(parseRIC(suggestion));
+      },
+      [onChange, onParsed],
+    );
 
-  &[data-size="lg"] {
-    height:      $ana-input-lg-height;
-    padding:     0 $ana-input-lg-padding-x;
-    gap:         $ana-input-lg-gap;
-    font-size:   $ana-input-lg-font-size;
-    font-weight: $ana-input-lg-font-weight;
-    line-height: $ana-input-lg-line-height;
+    const handleChange = useCallback(
+      (e: React.ChangeEvent<HTMLInputElement>) => {
+        setInternalValue(e.target.value);
+        onChange?.(e);
+      },
+      [onChange],
+    );
 
-    &[data-has-icon-left]   { padding-left:  calc(#{$ana-input-lg-padding-x} / 4); }
-    &[data-has-icon-right]  { padding-right: calc(#{$ana-input-lg-padding-x} / 4); }
-  }
+    const handleClear = useCallback(() => {
+      setInternalValue('');
+      setOpen(false);
+      onClear?.();
+    }, [onClear]);
 
-  &[data-size="xl"] {
-    height:      $ana-input-xl-height;
-    padding:     0 $ana-input-xl-padding-x;
-    gap:         $ana-input-xl-gap;
-    font-size:   $ana-input-xl-font-size;
-    font-weight: $ana-input-xl-font-weight;
-    line-height: $ana-input-xl-line-height;
+    const handleKeyDown: KeyboardEventHandler<HTMLInputElement> = useCallback(
+      (e) => {
+        if (open && suggestions.length > 0) {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setActiveIdx(i => Math.min(i + 1, suggestions.length - 1));
+            return;
+          }
+          if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setActiveIdx(i => Math.max(i - 1, -1));
+            return;
+          }
+          if (e.key === 'Tab' || e.key === 'Enter') {
+            const target = activeIdx >= 0 ? suggestions[activeIdx] : suggestions[0];
+            e.preventDefault();
+            accept(target);
+            return;
+          }
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            setOpen(false);
+            return;
+          }
+        }
+        onKeyDown?.(e);
+      },
+      [open, suggestions, activeIdx, accept, onKeyDown],
+    );
 
-    &[data-has-icon-left]   { padding-left:  calc(#{$ana-input-xl-padding-x} / 4); }
-    &[data-has-icon-right]  { padding-right: calc(#{$ana-input-xl-padding-x} / 4); }
-  }
-}
+    // Close dropdown when focus leaves the whole wrapper.
+    const handleBlur = useCallback((e: React.FocusEvent) => {
+      if (!wrapperRef.current?.contains(e.relatedTarget as Node)) {
+        setOpen(false);
+      }
+    }, []);
 
-// ── Actual <input> element ────────────────────────────────────────────────────
-.input {
-  flex:        1;
-  min-width:   0;
-  width:       100%;
-  border:      none;
-  outline:     none;
-  background:  transparent;
-  color:       inherit;
-  font-size:   inherit;
-  font-weight: inherit;
-  line-height: inherit;
-  font-family: inherit;
-  padding:     0;
+    const hasError = Boolean(internalValue && parseResult && !parseResult.ok);
 
-  &::placeholder {
-    color:   currentColor;
-    opacity: 0.45;
-  }
+    return (
+      <div className={styles.root} ref={wrapperRef} onBlur={handleBlur}>
+        {/* Input + dropdown anchor */}
+        <div className={styles.inputWrap}>
+          <Input
+            ref={ref}
+            value={internalValue}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            onClear={handleClear}
+            error={hasError}
+            {...rest}
+          />
 
-  &:disabled {
-    cursor: not-allowed;
-  }
-}
+          {/* Suggestion dropdown */}
+          {open && suggestions.length > 0 && (
+            <ul className={styles.dropdown} role="listbox">
+              {suggestions.map((sug, i) => {
+                const parsed = parseRIC(sug);
+                const desc   = parsed.ok ? parsed.ric.display : '';
+                return (
+                  <li
+                    key={sug}
+                    role="option"
+                    aria-selected={i === activeIdx}
+                    className={styles.dropdownItem}
+                    data-active={i === activeIdx || undefined}
+                    onMouseDown={(e) => {
+                      // mousedown fires before blur; prevent blur from closing first
+                      e.preventDefault();
+                      accept(sug);
+                    }}
+                    onMouseEnter={() => setActiveIdx(i)}
+                  >
+                    <span className={styles.sugCode}>{sug}</span>
+                    {desc && <span className={styles.sugDesc}>{desc}</span>}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
 
-// ── Icon slots ────────────────────────────────────────────────────────────────
-.iconSlot {
-  display:      inline-flex;
-  align-items:  center;
-  justify-content: center;
-  flex-shrink:  0;
-  color:        inherit;
-  // size applied in .iconSlotSm / Lg / Xl via wrapper size data attr below
-  width:        16px;
-  height:       16px;
-
-  svg {
-    width:  100%;
-    height: 100%;
-  }
-}
-
-.iconButton {
-  composes: iconSlot;
-  background:  transparent;
-  border:      none;
-  padding:     0;
-  cursor:      pointer;
-  color:       inherit;
-  border-radius: calc(#{$ana-input-border-radius} - 1px);
-  outline:     $ana-input-border-width solid transparent;
-  outline-offset: 0;
-
-  &:focus-visible {
-    outline-color: $ana-input-focus-color;
-  }
-
-  &:disabled {
-    cursor:  not-allowed;
-    opacity: 0.4;
-  }
-}
-
-// Icon size scales with wrapper size
-.wrapper[data-size="lg"] .iconSlot,
-.wrapper[data-size="lg"] .iconButton {
-  width:  18px;
-  height: 18px;
-}
-
-.wrapper[data-size="xl"] .iconSlot,
-.wrapper[data-size="xl"] .iconButton {
-  width:  20px;
-  height: 20px;
-}
-
-// ── Prefix / Suffix ──────────────────────────────────────────────────────────
-.prefix,
-.suffix {
-  flex-shrink:  0;
-  white-space:  nowrap;
-  color:        inherit;
-  opacity:      0.6;
-  user-select:  none;
-}
-
-// ── Clear button ─────────────────────────────────────────────────────────────
-.clearButton {
-  display:      inline-flex;
-  align-items:  center;
-  justify-content: center;
-  flex-shrink:  0;
-  width:        16px;
-  height:       16px;
-  background:   transparent;
-  border:       none;
-  padding:      0;
-  cursor:       pointer;
-  color:        inherit;
-  opacity:      0.45;
-  border-radius: 50%;
-  transition:   opacity 0.1s ease;
-
-  &:hover   { opacity: 1; }
-  &:focus-visible {
-    outline: $ana-input-border-width solid $ana-input-focus-color;
-    outline-offset: 0;
-    opacity: 1;
-  }
-
-  svg {
-    width:  100%;
-    height: 100%;
-  }
-}
-
-.wrapper[data-size="lg"] .clearButton {
-  width:  18px;
-  height: 18px;
-}
-
-.wrapper[data-size="xl"] .clearButton {
-  width:  20px;
-  height: 20px;
-}
-export { Input } from './Input';
-export type { InputProps, InputVariant, InputSize } from './Input';
+        {/* Resolved label */}
+        {showResolved && parseResult && (
+          <div
+            className={styles.resolved}
+            data-ok={parseResult.ok || undefined}
+          >
+            {parseResult.ok ? parseResult.ric.display : parseResult.error}
+          </div>
+        )}
+      </div>
+    );
+  },
+);
