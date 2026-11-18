@@ -59,6 +59,11 @@ usage() {
 macos-ify.sh — userspace macOS look for Ubuntu/GNOME
 
   --revert         restore the settings this script changed
+  --local FILE     install a theme archive you downloaded by hand
+                   (gnome-look / Pling .tar.xz, .tar.gz or .zip). Detects
+                   whether it is a GTK theme, shell theme, icon theme or
+                   cursor theme, puts it in the right place and applies it.
+                   Repeatable: --local a.tar.xz --local b.zip
   --no-deps        skip Homebrew dependency install
   --no-theme       skip WhiteSur GTK/shell theme
   --no-icons       skip icons and cursors
@@ -73,22 +78,48 @@ and ~/.local/share/gnome-shell/extensions. Logs and a revert script go to
 EOF
 }
 
-for arg in "$@"; do
-  case "$arg" in
-    --revert)        MODE=revert ;;
-    --no-deps)       DO_DEPS=0 ;;
-    --no-theme)      DO_THEME=0 ;;
-    --no-icons)      DO_ICONS=0 ;;
-    --no-fonts)      DO_FONTS=0 ;;
-    --no-extensions) DO_EXT=0 ;;
-    --no-settings)   DO_SETTINGS=0 ;;
+LOCAL_ARCHIVES=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --revert)        MODE=revert; shift ;;
+    --no-deps)       DO_DEPS=0; shift ;;
+    --no-theme)      DO_THEME=0; shift ;;
+    --no-icons)      DO_ICONS=0; shift ;;
+    --no-fonts)      DO_FONTS=0; shift ;;
+    --no-extensions) DO_EXT=0; shift ;;
+    --no-settings)   DO_SETTINGS=0; shift ;;
+    --local)
+      [ $# -ge 2 ] || { echo "--local needs a file path" >&2; exit 2; }
+      LOCAL_ARCHIVES+=("$2"); MODE=local; shift 2 ;;
     --help|-h)       usage; exit 0 ;;
-    *) echo "unknown flag: $arg" >&2; usage; exit 2 ;;
+    *) echo "unknown flag: $1" >&2; usage; exit 2 ;;
   esac
 done
 
-mkdir -p "$WORK" "$SRC" "$THEMES_DIR" "$ICONS_DIR" "$FONTS_DIR" "$EXT_DIR"
+SHIM="$WORK/shim"
+PRISTINE="$WORK/revert-pristine.sh"
+
+mkdir -p "$WORK" "$SRC" "$SHIM" "$THEMES_DIR" "$ICONS_DIR" "$FONTS_DIR" "$EXT_DIR"
 : >"$LOG"
+
+# ----------------------------------------------------------------------------
+# Privilege shim — upstream installers (WhiteSur's lib-install.sh in
+# particular) call `sudo apt install` for missing build deps, and one path
+# even calls `sudo date -s` to reset the system clock. You have no sudo, so
+# every escalation route is replaced with a stub that fails immediately.
+# Nothing can prompt you for a password, and nothing can hang waiting for one.
+# ----------------------------------------------------------------------------
+for blocked in sudo pkexec su doas apt apt-get dnf yum pacman zypper eopkg xbps-install swupd; do
+  cat >"$SHIM/$blocked" <<EOS
+#!/usr/bin/env bash
+echo "macos-ify: BLOCKED privileged call -> $blocked \$*" >&2
+exit 1
+EOS
+  chmod +x "$SHIM/$blocked"
+done
+export PATH="$SHIM:$PATH"
+export SUDO_ASKPASS=/bin/false
+export DEBIAN_FRONTEND=noninteractive
 
 # ----------------------------------------------------------------------------
 # gsettings helpers (guarded — a missing schema is skipped, not fatal)
@@ -126,15 +157,34 @@ gset() {
 # Revert
 # ----------------------------------------------------------------------------
 if [ "$MODE" = revert ]; then
-  [ -f "$REVERT" ] || die "no revert script found at $REVERT"
+  # Prefer the first-run snapshot: later runs record already-themed values.
+  use="$PRISTINE"; [ -f "$use" ] || use="$REVERT"
+  [ -f "$use" ] || die "no revert script found in $WORK"
   step "Reverting settings"
-  bash "$REVERT" && ok "settings restored"
+  dim "using $(basename "$use")"
+  bash "$use" && ok "settings restored"
+
+  # The GTK4/libadwaita override is a file, not a setting — gsettings cannot
+  # undo it, so modern GNOME apps stay themed until it is removed.
+  removed=0
+  for f in gtk.css gtk-dark.css assets windows-assets; do
+    [ -e "$HOME/.config/gtk-4.0/$f" ] && rm -rf "$HOME/.config/gtk-4.0/$f" && removed=1
+  done
+  [ "$removed" = 1 ] && ok "removed GTK4/libadwaita override" || dim "no GTK4 override present"
+
   say ""
   say "Themes, icons, fonts and extensions were left in place. To remove them:"
   say "  rm -rf $THEMES_DIR/WhiteSur* $ICONS_DIR/WhiteSur* $ICONS_DIR/McMojave-cursors"
   say "  rm -rf $EXT_DIR/{blur-my-shell@aunetx,just-perfection-desktop@just-perfection}"
   say "Log out and back in to finish."
   exit 0
+fi
+
+# Keep the FIRST run's snapshot forever — that is the only one holding your
+# genuine pre-theme values. Later runs would otherwise record WhiteSur's own
+# settings as the "originals".
+if [ -f "$REVERT" ] && [ ! -f "$PRISTINE" ]; then
+  cp "$REVERT" "$PRISTINE"
 fi
 
 cat >"$REVERT" <<'EOF'
@@ -182,6 +232,72 @@ SYS_GLIB_COMPILE=/usr/bin/glib-compile-schemas
 [ -x "$SYS_GLIB_COMPILE" ] || SYS_GLIB_COMPILE="$(command -v glib-compile-schemas || true)"
 
 # ----------------------------------------------------------------------------
+# --local: install a hand-downloaded archive (gnome-look / Pling)
+#
+# Their download URLs are tokenised and expire, so there is nothing stable to
+# fetch. You download, this installs it in the right place for your user.
+# ----------------------------------------------------------------------------
+classify_and_install() {   # $1 = extracted root
+  local root="$1" d base kind dest found=0
+  while IFS= read -r d; do
+    base="$(basename "$d")"
+    kind=""
+    if [ -d "$d/cursors" ]; then
+      kind=cursor; dest="$ICONS_DIR"
+    elif [ -d "$d/gtk-3.0" ] || [ -d "$d/gtk-4.0" ] || [ -d "$d/gnome-shell" ]; then
+      kind=gtk; dest="$THEMES_DIR"
+    elif [ -f "$d/index.theme" ] && grep -q '^Directories=' "$d/index.theme" 2>/dev/null; then
+      kind=icon; dest="$ICONS_DIR"
+    fi
+    [ -z "$kind" ] && continue
+
+    rm -rf "$dest/$base"
+    cp -r "$d" "$dest/$base" || { bad "copy failed: $base"; continue; }
+    ok "$kind theme: $base -> $dest"
+    found=1
+
+    case "$kind" in
+      gtk)
+        gset org.gnome.desktop.interface gtk-theme "$base"
+        [ -d "$dest/$base/gnome-shell" ] && \
+          gset org.gnome.shell.extensions.user-theme name "$base"
+        ;;
+      icon)   gset org.gnome.desktop.interface icon-theme   "$base" ;;
+      cursor) gset org.gnome.desktop.interface cursor-theme "$base" ;;
+    esac
+  done < <(find "$root" -mindepth 1 -maxdepth 3 -type d 2>/dev/null)
+
+  [ "$found" = 1 ] || warn "nothing recognisable in this archive"
+  return 0
+}
+
+if [ "$MODE" = local ]; then
+  step "Installing downloaded archives"
+  for a in "${LOCAL_ARCHIVES[@]}"; do
+    a="${a/#\~/$HOME}"
+    if [ ! -f "$a" ]; then bad "not found: $a"; continue; fi
+    say "  $(basename "$a")"
+    tmp="$(mktemp -d)"
+    extracted=1
+    case "$a" in
+      *.tar.xz|*.txz)   tar -xJf "$a" -C "$tmp" >>"$LOG" 2>&1 || extracted=0 ;;
+      *.tar.gz|*.tgz)   tar -xzf "$a" -C "$tmp" >>"$LOG" 2>&1 || extracted=0 ;;
+      *.tar.bz2|*.tbz2) tar -xjf "$a" -C "$tmp" >>"$LOG" 2>&1 || extracted=0 ;;
+      *.tar)            tar -xf  "$a" -C "$tmp" >>"$LOG" 2>&1 || extracted=0 ;;
+      *.zip)            python3 -m zipfile -e "$a" "$tmp" >>"$LOG" 2>&1 || extracted=0 ;;
+      *) bad "unsupported archive type (want .tar.xz/.tar.gz/.zip)"; rm -rf "$tmp"; continue ;;
+    esac
+    if [ "$extracted" = 0 ]; then bad "could not extract (see $LOG)"; rm -rf "$tmp"; continue; fi
+    classify_and_install "$tmp"
+    rm -rf "$tmp"
+  done
+  say ""
+  say "Log out and back in if a shell theme was installed."
+  say "Revert: $0 --revert"
+  exit 0
+fi
+
+# ----------------------------------------------------------------------------
 # Dependencies
 # ----------------------------------------------------------------------------
 if [ "$DO_DEPS" = 1 ] && [ "$HAS_BREW" = 1 ]; then
@@ -194,6 +310,25 @@ if [ "$DO_DEPS" = 1 ] && [ "$HAS_BREW" = 1 ]; then
       if brew install "$pkg" >>"$LOG" 2>&1; then ok "$pkg"; else warn "brew install $pkg failed (see $LOG)"; fi
     fi
   done
+fi
+
+# The theme build needs these two on PATH. If they are missing, WhiteSur's
+# installer tries to sudo-apt them in — which is exactly what we are avoiding,
+# so we check first and skip the source build rather than let it ask.
+DEPS_OK=1 MISSING_DEPS=""
+for bin in sassc glib-compile-resources; do
+  if have "$bin"; then
+    dim "$bin -> $(command -v "$bin")"
+  else
+    DEPS_OK=0; MISSING_DEPS="$MISSING_DEPS $bin"
+  fi
+done
+if [ "$DEPS_OK" = 1 ]; then
+  ok "build dependencies present"
+else
+  warn "missing:$MISSING_DEPS"
+  dim "source build will be skipped (it would try to sudo apt-install these)"
+  [ "$HAS_BREW" = 1 ] && dim "fix with: brew install sassc glib"
 fi
 
 # ----------------------------------------------------------------------------
@@ -226,31 +361,66 @@ if [ "$DO_THEME" = 1 ]; then
     pushd "$dir" >/dev/null || true
 
     # Upstream has changed flag spellings over time; try the likely forms.
+    # stdin is closed so no installer can block on a prompt, and the shim
+    # above guarantees any sudo attempt fails instead of asking you.
     built=0
-    for args in "-c Light --round" "-c light --round" "-c Light" ""; do
-      # shellcheck disable=SC2086
-      if ./install.sh $args >>"$LOG" 2>&1; then
-        built=1; dim "install.sh $args"; break
-      fi
-    done
+    if [ "$DEPS_OK" = 1 ]; then
+      for args in "-c Light --round" "-c light --round" "-c Light" ""; do
+        # shellcheck disable=SC2086
+        if ./install.sh $args >>"$LOG" 2>&1 </dev/null; then
+          built=1; dim "install.sh $args"; break
+        fi
+        grep -q "BLOCKED privileged call" "$LOG" && { dim "installer wanted root; stopping retries"; break; }
+      done
+    fi
     if [ "$built" = 1 ]; then
       ok "theme built and installed to $THEMES_DIR"
     else
-      warn "source build failed (usually a missing sassc / glib-compile-resources)"
-      dim "see $LOG — if you have brew, run: brew install sassc glib"
-      # Fallback: any prebuilt zip shipped in the repo.
+      warn "source build unavailable — falling back to a prebuilt theme"
+      # Fallback 1: a prebuilt zip shipped inside the repo.
       found=0
       while IFS= read -r z; do
         python3 -m zipfile -e "$z" "$THEMES_DIR/" >>"$LOG" 2>&1 && found=1
       done < <(find . -maxdepth 2 -iname 'WhiteSur*.zip' 2>/dev/null)
+
+      # Fallback 2: the latest GitHub release asset. No build step, no deps.
+      if [ "$found" = 0 ]; then
+        tmpz="$(mktemp -d)"
+        if python3 -I - "$tmpz" <<'PY' >>"$LOG" 2>&1
+import json, re, sys, urllib.request
+from pathlib import Path
+out = Path(sys.argv[1])
+api = "https://api.github.com/repos/vinceliuice/WhiteSur-gtk-theme/releases/latest"
+req = urllib.request.Request(api, headers={"User-Agent": "macos-ify"})
+rel = json.load(urllib.request.urlopen(req, timeout=30))
+assets = [a for a in rel.get("assets", []) if re.search(r"\.zip$", a["name"], re.I)]
+pref = [a for a in assets if re.search(r"light", a["name"], re.I)] or assets
+if not pref:
+    sys.exit("no zip asset in latest release")
+a = pref[0]
+urllib.request.urlretrieve(a["browser_download_url"], out / a["name"])
+print("downloaded", a["name"])
+PY
+        then
+          z="$(find "$tmpz" -maxdepth 1 -name '*.zip' | head -1)"
+          [ -n "$z" ] && python3 -m zipfile -e "$z" "$THEMES_DIR/" >>"$LOG" 2>&1 && found=1
+        fi
+        rm -rf "$tmpz"
+      fi
+
       [ "$found" = 1 ] && ok "unpacked prebuilt theme into $THEMES_DIR" \
                        || bad "no prebuilt theme available either"
     fi
 
     # libadwaita / GTK4 override so modern GNOME apps follow the theme.
-    ./install.sh -l -c Light >>"$LOG" 2>&1 \
-      && ok "libadwaita override written to ~/.config/gtk-4.0" \
-      || warn "libadwaita override failed (GTK4 apps will stay stock)"
+    # Only meaningful if the theme assets exist; harmless otherwise.
+    if [ "$built" = 1 ]; then
+      ./install.sh -l -c Light >>"$LOG" 2>&1 </dev/null \
+        && ok "libadwaita override written to ~/.config/gtk-4.0" \
+        || warn "libadwaita override failed (GTK4 apps will stay stock)"
+    else
+      dim "skipping libadwaita override (needs the source build)"
+    fi
 
     popd >/dev/null || true
   fi
@@ -273,9 +443,9 @@ if [ "$DO_ICONS" = 1 ] && have git; then
   step "Icons and cursors"
 
   if dir="$(clone_or_update https://github.com/vinceliuice/WhiteSur-icon-theme.git WhiteSur-icon-theme)"; then
-    ( cd "$dir" && ./install.sh -d "$ICONS_DIR" >>"$LOG" 2>&1 ) \
-      || ( cd "$dir" && ./install.sh >>"$LOG" 2>&1 ) \
-      || warn "icon installer failed"
+    # Always pass -d: the bare installer can target a system directory.
+    ( cd "$dir" && ./install.sh -d "$ICONS_DIR" >>"$LOG" 2>&1 </dev/null ) \
+      || warn "icon installer failed (see $LOG)"
     for cand in WhiteSur-light WhiteSur WhiteSur-dark; do
       [ -d "$ICONS_DIR/$cand" ] && { ICON_THEME_NAME="$cand"; break; }
     done
@@ -487,6 +657,11 @@ fi
 # Done
 # ----------------------------------------------------------------------------
 step "Done"
+if grep -q "BLOCKED privileged call" "$LOG" 2>/dev/null; then
+  warn "an upstream installer tried to use root; it was blocked, not prompted:"
+  grep -o "BLOCKED privileged call -> .*" "$LOG" | sort -u | head -5 | while read -r l; do dim "$l"; done
+  dim "this is expected without sudo and does not need fixing"
+fi
 say ""
 say "${c_bld}Log out and back in${c_reset} — extensions and the shell theme only load"
 say "on a fresh session (Wayland cannot restart the shell in place)."
