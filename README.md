@@ -300,35 +300,138 @@ fi
 # ----------------------------------------------------------------------------
 # Dependencies
 # ----------------------------------------------------------------------------
-if [ "$DO_DEPS" = 1 ] && [ "$HAS_BREW" = 1 ]; then
-  step "Dependencies via Homebrew"
-  for pkg in sassc glib; do
-    if brew list --formula "$pkg" >/dev/null 2>&1; then
-      ok "$pkg already installed"
-    else
-      say "  installing $pkg…"
-      if brew install "$pkg" >>"$LOG" 2>&1; then ok "$pkg"; else warn "brew install $pkg failed (see $LOG)"; fi
+#
+# WhiteSur needs two binaries: `sassc` (to compile its SCSS) and
+# `glib-compile-resources`. Missing either, its installer reaches for
+# `sudo apt install`. We provision both without root, trying in order:
+#   1. already on PATH
+#   2. Homebrew, if present
+#   3. sassc    -> pip's libsass wheel, wrapped as `sassc` (no compiler)
+#      glib-... -> unpack Ubuntu's own .deb into $HOME (no root)
+#
+DEPBIN="$WORK/deps-bin"
+OPTDIR="$HOME/.local/opt"
+mkdir -p "$DEPBIN" "$OPTDIR"
+export PATH="$SHIM:$DEPBIN:$HOME/.local/bin:$PATH"
+
+provision_sassc() {
+  have sassc && { dim "sassc -> $(command -v sassc)"; return 0; }
+
+  if [ "$HAS_BREW" = 1 ]; then
+    say "  trying brew install sassc…"
+    brew install sassc >>"$LOG" 2>&1
+    have sassc && { ok "sassc via brew"; return 0; }
+  fi
+
+  # libsass ships prebuilt wheels, so this needs no compiler and no root.
+  say "  installing libsass (pip, user-level)…"
+  python3 -m pip install --user --quiet libsass >>"$LOG" 2>&1 \
+    || python3 -m pip install --user --quiet --break-system-packages libsass >>"$LOG" 2>&1
+
+  local py
+  py="$(command -v pysassc || true)"
+  [ -z "$py" ] && [ -x "$HOME/.local/bin/pysassc" ] && py="$HOME/.local/bin/pysassc"
+  if [ -n "$py" ]; then
+    # pysassc takes the same '-t <style> IN OUT' form WhiteSur uses.
+    printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$py" >"$DEPBIN/sassc"
+    chmod +x "$DEPBIN/sassc"
+    hash -r 2>/dev/null || true
+    have sassc && { ok "sassc via libsass/pysassc shim"; return 0; }
+  fi
+  return 1
+}
+
+provision_glib_resources() {
+  have glib-compile-resources && { dim "glib-compile-resources -> $(command -v glib-compile-resources)"; return 0; }
+
+  if [ "$HAS_BREW" = 1 ]; then
+    say "  trying brew install glib…"
+    brew install glib >>"$LOG" 2>&1
+    have glib-compile-resources && { ok "glib-compile-resources via brew"; return 0; }
+  fi
+
+  # Unpack Ubuntu's own package into $HOME. `apt-get download` needs no root,
+  # and dpkg-deb -x just extracts. Called by absolute path because the shim
+  # above deliberately blocks bare `apt-get`.
+  if [ -x /usr/bin/apt-get ] && have dpkg-deb; then
+    say "  unpacking libglib2.0-dev-bin into \$HOME (no root)…"
+    local t; t="$(mktemp -d)"
+    if ( cd "$t" && /usr/bin/apt-get download libglib2.0-dev-bin >>"$LOG" 2>&1 ); then
+      local deb; deb="$(find "$t" -maxdepth 1 -name '*.deb' | head -1)"
+      if [ -n "$deb" ]; then
+        rm -rf "$OPTDIR/glibdev"
+        dpkg-deb -x "$deb" "$OPTDIR/glibdev" >>"$LOG" 2>&1
+        local g; g="$(find "$OPTDIR/glibdev" -type f -name 'glib-compile-resources' | head -1)"
+        if [ -n "$g" ]; then
+          ln -sf "$g" "$DEPBIN/glib-compile-resources"
+          hash -r 2>/dev/null || true
+          rm -rf "$t"
+          have glib-compile-resources && { ok "glib-compile-resources unpacked from .deb"; return 0; }
+        fi
+      fi
     fi
-  done
+    rm -rf "$t"
+  fi
+  return 1
+}
+
+# The third, easily missed one. Upstream gates on xmllint too, and without it
+# goes straight to `sudo apt install sassc libxml2-utils` — which is what
+# produced "installer wanted root" even with sassc and glib already present.
+provision_xmllint() {
+  have xmllint && { dim "xmllint -> $(command -v xmllint)"; return 0; }
+
+  if [ "$HAS_BREW" = 1 ]; then
+    say "  trying brew install libxml2…"
+    brew install libxml2 >>"$LOG" 2>&1
+    # libxml2 is keg-only in Homebrew: its binaries are not linked into bin.
+    local p x
+    p="$(brew --prefix libxml2 2>/dev/null)"
+    for x in "$p/bin/xmllint" "$(brew --prefix 2>/dev/null)/opt/libxml2/bin/xmllint"; do
+      if [ -x "$x" ]; then
+        ln -sf "$x" "$DEPBIN/xmllint"; hash -r 2>/dev/null || true
+        have xmllint && { ok "xmllint via brew (keg-only, linked manually)"; return 0; }
+      fi
+    done
+  fi
+
+  if [ -x /usr/bin/apt-get ] && have dpkg-deb; then
+    say "  unpacking libxml2-utils into \$HOME (no root)…"
+    local t; t="$(mktemp -d)"
+    if ( cd "$t" && /usr/bin/apt-get download libxml2-utils >>"$LOG" 2>&1 ); then
+      local deb; deb="$(find "$t" -maxdepth 1 -name '*.deb' | head -1)"
+      if [ -n "$deb" ]; then
+        rm -rf "$OPTDIR/xmlutils"
+        dpkg-deb -x "$deb" "$OPTDIR/xmlutils" >>"$LOG" 2>&1
+        local g; g="$(find "$OPTDIR/xmlutils" -type f -name 'xmllint' | head -1)"
+        if [ -n "$g" ]; then
+          ln -sf "$g" "$DEPBIN/xmllint"; hash -r 2>/dev/null || true
+          rm -rf "$t"
+          have xmllint && { ok "xmllint unpacked from .deb"; return 0; }
+        fi
+      fi
+    fi
+    rm -rf "$t"
+  fi
+  return 1
+}
+
+if [ "$DO_DEPS" = 1 ]; then
+  step "Build dependencies (no root required)"
+  provision_sassc           || warn "could not provide sassc"
+  provision_glib_resources  || warn "could not provide glib-compile-resources"
+  provision_xmllint         || warn "could not provide xmllint"
 fi
 
-# The theme build needs these two on PATH. If they are missing, WhiteSur's
-# installer tries to sudo-apt them in — which is exactly what we are avoiding,
-# so we check first and skip the source build rather than let it ask.
 DEPS_OK=1 MISSING_DEPS=""
-for bin in sassc glib-compile-resources; do
-  if have "$bin"; then
-    dim "$bin -> $(command -v "$bin")"
-  else
-    DEPS_OK=0; MISSING_DEPS="$MISSING_DEPS $bin"
-  fi
+for bin in sassc glib-compile-resources xmllint; do
+  have "$bin" || { DEPS_OK=0; MISSING_DEPS="$MISSING_DEPS $bin"; }
 done
 if [ "$DEPS_OK" = 1 ]; then
-  ok "build dependencies present"
+  ok "build dependencies satisfied"
 else
-  warn "missing:$MISSING_DEPS"
-  dim "source build will be skipped (it would try to sudo apt-install these)"
-  [ "$HAS_BREW" = 1 ] && dim "fix with: brew install sassc glib"
+  warn "still missing:$MISSING_DEPS"
+  dim "the GTK theme needs these; use --local with a prebuilt archive instead"
 fi
 
 # ----------------------------------------------------------------------------
@@ -511,12 +614,14 @@ PY
 
   # Resolve the real family name — Inter ships variable and static builds
   # whose family strings differ between releases.
+  # Inter 4.x ships optical-size families ("Inter 18pt", "Inter 24pt") and
+  # "InterVariable" rather than a plain "Inter", so match by prefix and
+  # prefer the plain name when it exists.
   if have fc-list; then
-    for cand in "Inter Display" "Inter" "Inter Variable"; do
-      if fc-list : family 2>/dev/null | tr ',' '\n' | grep -qix -- "$cand"; then
-        FONT_FAMILY="$cand"; break
-      fi
-    done
+    FONT_FAMILY="$(fc-list : family 2>/dev/null | tr ',' '\n' | sed 's/^ *//;s/ *$//' \
+      | grep -i '^Inter' | sort -u \
+      | awk '{ print (tolower($0)=="inter" ? 0 : ($0 ~ /18pt/ ? 1 : 2)), $0 }' \
+      | sort -n | head -1 | cut -d" " -f2-)"
   fi
   [ -n "$FONT_FAMILY" ] && ok "font family: $FONT_FAMILY" || dim "Inter not registered; font unchanged"
 fi
