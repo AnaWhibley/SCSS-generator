@@ -1,104 +1,140 @@
----
-name: mr-review
-description: Review a GitLab merge request or the current branch's frontend/UI changes (React, TypeScript, CSS) like a senior UI engineer. Use for /mr-review, "review this MR", "review my branch", "review !123", or a GitLab MR URL. Local/current branch produces a written report; someone else's MR produces inline MR comments.
-compatibility: Requires git. MR mode needs an authenticated glab CLI or a GitLab MCP server configured in Kiro.
-metadata:
-  author: Ana Santana
-  version: 1.0.0
+# UI review checklist (React + TypeScript)
+
+Apply these in priority order. Project rules in `.kiro/mr-review.md` override anything here. Each item says what to look for; the *why* is in brackets where it isn't obvious.
+
 ---
 
-# MR Review (UI)
+## 1. Behaviour and correctness
 
-You are reviewing frontend changes as a senior UI engineer. Your job is to find what will hurt users, maintainers or the release: bugs, accessibility failures, performance regressions, type holes, and design-system drift. You are not a linter, and you don't pad reviews.
+**UI states.** Every async or data-driven view handles all of these:
+- [ ] Loading: no layout jump when data arrives; skeleton or reserved space.
+- [ ] Empty: zero results, a new user, a filtered-to-nothing list.
+- [ ] Error: a message the user can act on, plus retry where it makes sense. No blank screen, and no `console.error` as the only handling.
+- [ ] Partial or stale: refetching while showing old data, pagination edges.
+- [ ] Extreme content: very long text or numbers, missing optional fields, 1 item vs 1,000.
 
-## 1. Work out the mode from what follows `/mr-review`
+**Effects and async.**
+- [ ] `useEffect` dependency arrays are complete. No `eslint-disable` for `exhaustive-deps` without a comment explaining why.
+- [ ] Effects aren't used for derived data or event handling. [Compute in render, or do it in the handler; see "You Might Not Need an Effect".]
+- [ ] Async work in effects is cancelled or ignored on unmount and on dependency change (`AbortController`, an `ignore` flag). [Prevents stale responses overwriting fresh ones.]
+- [ ] Subscriptions, timers, observers and listeners are cleaned up.
+- [ ] Server state goes through the project's data layer (TanStack Query, RTK Query, SWR, etc.), not hand-rolled `useState` + `useEffect` + `fetch`.
 
-| Input after the command | Mode | Output |
-|---|---|---|
-| nothing, `current`, `local`, `mine` | **Local**: the checked-out branch, which may be someone else's branch checked out locally | Written report in chat |
-| a branch name (`feature/x`) | **Local**, for that branch | Written report in chat |
-| `!123`, `123`, or a GitLab MR URL | **MR**: someone else's merge request | Draft inline comments, posted after confirmation |
+**State.**
+- [ ] No duplicated or synced state that could be derived from props or other state.
+- [ ] State lives as low as possible. It's lifted only when siblings need it.
+- [ ] No switching between controlled and uncontrolled inputs (`value` flipping between a value and `undefined`).
+- [ ] List `key`s are stable IDs, not the array index, for lists that reorder, filter or insert.
+- [ ] Objects and arrays in state are updated immutably.
+- [ ] URL-worthy state (filters, tabs, pagination, selected item) is in the URL if users would expect to share or refresh it.
 
-If the input is ambiguous, ask once. Any other text after the command (such as "focus on a11y" or "only the grid component") narrows the review's focus.
+**Interaction.**
+- [ ] Double submit is prevented (button disabled or pending, or the request is idempotent).
+- [ ] Destructive actions are confirmed or undoable.
+- [ ] Optimistic updates roll back on failure.
+- [ ] Debounced or throttled inputs flush or cancel correctly on unmount.
 
-## 2. Load context before reading any diff
+## 2. Accessibility (WCAG 2.2 AA)
 
-1. **Project rules.** If `.kiro/mr-review.md` exists at the workspace root, read it. Its rules **override** the generic checklist: stack, design system, conventions, things to ignore. Also respect any steering files already in context.
-2. **Stack detection.** Read `package.json` to learn the React version, state and data libraries (TanStack Query, Redux, Zustand), styling (CSS Modules, Tailwind, styled-components, a design system package), test tools (Vitest/Jest, RTL, Playwright, Storybook) and whether the React Compiler is enabled. The package manager comes from the lockfile (`pnpm-lock.yaml` → pnpm).
-3. **Intent.** In MR mode, read the MR title, description, linked issue and existing discussions. In local mode, read the commit messages (`git log --oneline <base>..HEAD`). You can't judge a change if you don't know what it's meant to do.
+- [ ] **Semantic elements first.** `<button>` for actions, `<a href>` for navigation. A `div`/`span` with `onClick` is a blocking issue unless it has a role, `tabIndex` and key handlers, and even then, prefer the native element.
+- [ ] **Accessible names.** Every interactive control has one. Icon-only buttons have `aria-label`. Inputs have an associated `<label>` (a placeholder is not a label).
+- [ ] **Keyboard.** Everything works with Tab, Shift+Tab, Enter, Space, Escape and arrow keys where the pattern expects them. Tab order is logical. No positive `tabIndex`.
+- [ ] **Focus.** Focus is always visible (no `outline: none` without a replacement). Modals, drawers and popovers trap focus, close on Escape, and **return focus** to the trigger. After route changes and deletions, focus lands somewhere sensible.
+- [ ] **ARIA.** Used only when native semantics can't do the job. Roles match the WAI-ARIA Authoring Practices patterns (combobox, tabs, menu, grid). No `aria-hidden` on focusable content.
+- [ ] **Forms.** Errors are tied to fields (`aria-describedby`, `aria-invalid`), announced, and not shown only in colour. Required fields are marked. `autocomplete` and the right `type`/`inputMode` are set.
+- [ ] **Dynamic updates.** Toasts, async results and validation summaries use a live region where they need announcing.
+- [ ] **Colour and contrast.** Text is at least 4.5:1 (3:1 for large text and UI components). Information isn't conveyed by colour alone; for red/green P&L-style values, add a sign, icon or text.
+- [ ] **Motion.** Non-essential animation respects `prefers-reduced-motion`.
+- [ ] **Targets.** Pointer targets are at least 24×24 CSS px, or have enough spacing (WCAG 2.2 SC 2.5.8).
+- [ ] **Images.** Meaningful images have descriptive `alt`. Decorative images use `alt=""`.
+- [ ] **Structure.** Heading levels don't skip. Landmarks (`main`, `nav`) are present on new pages. The page `<title>` updates on route change.
 
-## 3. Get the diff
+## 3. TypeScript
 
-### Local mode
-```bash
-git fetch origin master --quiet || git fetch origin main --quiet   # base is master; fall back to main
-BASE=origin/master   # or origin/main if master doesn't exist
-git diff --stat $BASE...HEAD          # committed changes, against the merge-base
-git diff $BASE...HEAD
-git status --short                     # uncommitted work: review it but label it "uncommitted"
-git diff HEAD
-```
-Always use the three-dot form, so changes that landed on master after the branch was cut don't show up as part of this branch.
+- [ ] No new `any`. Use `unknown` and narrow it. No `as` casts that lie: casting API responses without validation, or `as unknown as X`.
+- [ ] No non-null `!` assertions unless the invariant is obvious from adjacent code.
+- [ ] No `@ts-ignore`. A `@ts-expect-error` needs a reason comment.
+- [ ] Discriminated unions for UI state (`{ status: 'loading' } | { status: 'error'; error } | { status: 'success'; data }`) instead of several booleans that can contradict each other.
+- [ ] Exhaustive `switch`/`if` over unions (a `never` check).
+- [ ] Props types are precise: optional means really optional, no boolean prop explosion (use a variant union), and children are typed when they're constrained.
+- [ ] API types come from the schema or codegen, or are validated at the boundary (zod/valibot), not hand-written and assumed.
+- [ ] Exported types and props of shared components are stable. Breaking changes are called out.
 
-If the current branch has an open MR (`glab mr list --source-branch "$(git branch --show-current)"`), fetch its existing discussions so you don't repeat points already raised.
+## 4. React patterns and architecture
 
-### MR mode
-Prefer a GitLab MCP server if one is configured. Otherwise use `glab`. The exact commands are in `references/gitlab.md`; read it before running anything in MR mode.
+- [ ] Components have one responsibility. A component of more than about 250 lines, or with mixed data fetching, business logic and markup, should be split, or its logic pulled into a hook.
+- [ ] Reusable logic lives in custom hooks named `useX`. Hooks are called unconditionally.
+- [ ] No prop drilling through more than about 3 layers. Context isn't used for frequently-changing values that many consumers read (re-render storm); split the context or use a store with selectors.
+- [ ] Components aren't defined inside other components. [They remount on every render and lose state.]
+- [ ] **Memoisation is justified.** If the React Compiler is on, manual `useMemo`/`useCallback`/`memo` is usually unnecessary; flag new ones. If it's off, memoise only where it's measured, or where referential stability matters (deps of effects, props to `memo` children, context values).
+- [ ] An error boundary protects new routes and widgets that can fail independently.
+- [ ] Lazy loading (`React.lazy` + `Suspense`) is used for heavy, rarely-used routes and components, with a sensible fallback.
+- [ ] New code follows the folder and naming conventions of the surrounding code, not a new pattern introduced silently.
 
-Summary: fetch the MR metadata (target branch, `diff_refs`, pipeline status), fetch existing discussions, then fetch the MR head ref locally (`refs/merge-requests/<iid>/head`, which works for forks) and diff with git. That gives you full files for context, not just hunks. **Never check out over the user's working tree.** If you need to run anything, use a temporary `git worktree` and remove it afterwards.
+## 5. Performance
 
-## 4. Review
+- [ ] **Re-renders in hot paths.** Typing, scrolling, hover and real-time ticks don't re-render large subtrees. Watch for inline objects and functions passed to memoised children, and context values recreated every render.
+- [ ] **Lists and tables.** More than about 100 rows, or unbounded data, is virtualised (or uses the grid's own virtualisation). Row components are cheap.
+- [ ] **Expensive work** (sort, filter, aggregate, format thousands of cells) isn't redone every render.
+- [ ] **Real-time and high-frequency data.** Updates are batched (rAF or throttle), not a `setState` per message. Charts at high frequency should consider canvas over SVG/DOM.
+- [ ] **Bundle.** New dependencies are justified. Check their size and whether something in the repo already does the job. Imports are tree-shakeable (no `import _ from 'lodash'`, no whole icon packs). Heavy libraries are lazy-loaded.
+- [ ] **Layout.** No layout thrashing (reading layout then writing styles in a loop). Images and media have dimensions or an aspect ratio. [Avoids CLS.]
+- [ ] **Network.** No request waterfalls that could run in parallel. Polling intervals are sane and stop when the view is hidden or unmounted. Caching and stale times are deliberate.
+- [ ] **Core Web Vitals impact.** Consider LCP for above-the-fold changes, INP for handlers with heavy synchronous work, and CLS for late-arriving content.
 
-Read `references/ui-checklist.md` and apply it. How to work through it:
+## 6. Styling and design system
 
-- **Size first.** Over about 400 changed lines, excluding lockfiles, generated files and snapshots, say so and suggest how it could have been split. Then review the riskiest files first: shared components, hooks, data fetching, routing, anything in a design-system folder.
-- **Read beyond the hunk.** Open the full file and the call sites of anything whose signature or behaviour changed. Check whether a helper or component that already exists makes new code redundant.
-- **Make passes in priority order:** behaviour and correctness → accessibility → types → state and data flow → performance → styling and design system → tests → hygiene.
-- **Run checks in local mode** on the affected scope: typecheck (`tsc --noEmit` or the project's script), lint, and tests related to changed files (`vitest related <files> --run` or equivalent). In MR mode, read the pipeline result instead of re-running it. Re-run locally in a worktree only if the pipeline is missing or failed for an unclear reason.
-- **Verify before flagging.** Every finding must point to a specific line and say how it fails ("clicking twice submits twice because…"). If you're not sure, write it as a question, not an issue. A false positive costs more trust than a missed nit.
-- **Don't flag** formatting, import order, or anything the project's linter, formatter or type checker already enforces. Don't flag style preferences the project rules don't back. Don't re-raise points from existing threads, including resolved ones, unless the fix is wrong.
-- **UI changes you can't see.** If the change is visual and the MR has no screenshots or recordings, request them (before/after, and mobile width if layout changed). If a browser or Playwright MCP is available and Storybook or a dev server runs, look at it yourself.
+- [ ] Uses existing design-system components and tokens (colour, spacing, typography, radius, z-index, breakpoints) rather than hard-coded hex values, px or ad-hoc components that duplicate DS ones.
+- [ ] No `!important` and no specificity wars. No global CSS leaking from a component. Styles follow the project's approach (modules, utility classes, CSS-in-JS); don't mix.
+- [ ] Responsive at the project's breakpoints. Nothing overflows at 320px width or at 200% zoom.
+- [ ] Text truncation and wrapping are handled (ellipsis plus tooltip or title for truncated values in dense UIs).
+- [ ] Theming (dark mode, high contrast) still works if the project supports it.
+- [ ] Logical properties (`margin-inline-start`) are used if the project supports RTL.
+- [ ] Inline `style` is only for truly dynamic values.
+- [ ] Focus, hover, active and disabled states exist for new interactive elements.
 
-### Severity
+## 7. Content, i18n and formatting
 
-- **Blocking:** a bug, a data or security risk, an accessibility failure that blocks a user (keyboard trap, unlabelled control, missing focus), a crash or broken state, a significant perf regression, or a broken contract with other code.
-- **Should fix:** a real problem that isn't urgent: a missing error or empty state, a weak type that hides bugs, a test gap on new logic, design-system drift, an avoidable re-render in a hot path.
-- **Nit:** small readability or naming points. **Five at most**; drop the rest.
-- **Question:** you need the author's intent before judging.
-- **Praise:** one or two specific things done well, only when they're real.
+- [ ] No hard-coded user-facing strings if the project uses i18n. Pluralisation is handled by the i18n library, not by `count === 1 ? … : …`.
+- [ ] Numbers, currency, percentages and dates use `Intl` or the project's formatters, with the right locale, precision and timezone. Don't format money with float arithmetic or `toFixed` on values that matter.
+- [ ] Copy is clear and consistent with existing terminology, and error messages say what to do next.
 
-## 5. Output
+## 8. Security and privacy
 
-### Local mode: report in chat
+- [ ] No `dangerouslySetInnerHTML` with unsanitised input. User-supplied URLs are validated (no `javascript:` hrefs).
+- [ ] No secrets, tokens or internal URLs in client code, env vars exposed to the bundle, or logs.
+- [ ] No PII in analytics events, logs, error reports or URLs.
+- [ ] Auth tokens aren't put in `localStorage` unless that's the project's deliberate pattern.
+- [ ] Authorisation isn't enforced only in the UI. Hiding a button is not access control; flag it if the server-side check isn't evident.
 
-```
-## MR review: <branch> → master
-**Verdict:** Ready / Ready after fixes / Needs rework. One sentence on why.
-**Scope:** N files, +X −Y. <one-line summary of what the change does>
-**Checks:** typecheck ✅/❌ · lint ✅/❌ · tests ✅/❌ (N run) · uncommitted changes: yes/no
+## 9. Tests
 
-### Blocking
-1. `path/to/File.tsx:42`: <problem>. **Impact:** <what breaks, for whom>. **Fix:** <concrete change, with a code snippet if short>
+- [ ] New logic and new UI states (error, empty, edge cases) have tests. Bug fixes include a regression test.
+- [ ] Testing Library queries by **role/label/text** (`getByRole('button', { name: /save/i })`), not by test IDs or class names unless there's no accessible handle.
+- [ ] `user-event` is used over `fireEvent`. Async UI uses `findBy*`/`waitFor`, never arbitrary `setTimeout` sleeps.
+- [ ] Network is mocked at the boundary (MSW) rather than by mocking internal hooks.
+- [ ] Tests assert behaviour the user sees, not implementation details (internal state, call counts on private functions).
+- [ ] No large snapshot tests as the only coverage. Snapshot updates in the diff were intended.
+- [ ] Storybook stories (if used) are added or updated for new components and states. Visual regression baselines were changed on purpose.
+- [ ] Critical user flows touched by the change have e2e coverage (Playwright/Cypress) if the project has it.
 
-### Should fix
-### Nits
-### Questions
-### Good
-```
-Leave out empty sections. Order findings by impact, not by file. If the branch has an open MR, end by offering to post the findings as inline comments.
+## 10. Hygiene and MR quality
 
-### MR mode: inline comments
+- [ ] No `console.log`/`debugger`, no commented-out code, and no unrelated changes or drive-by refactors mixed in (suggest a separate MR).
+- [ ] TODOs reference a ticket.
+- [ ] Feature flags are used for risky or partial features, and a removal plan exists for old flags.
+- [ ] Dependency changes are intentional: lockfile changes match `package.json`, there are no duplicate versions of React or the design system, and licences are acceptable.
+- [ ] Names say what things are (`isPriceStale`, not `flag2`). Comments explain *why*, not *what*.
+- [ ] The MR description explains the why, includes screenshots or recordings for visual changes, notes testing done, and mentions breaking changes or migration steps.
 
-1. Write every finding as a draft comment in **Conventional Comments** format:
-   `issue (blocking): …` · `suggestion: …` · `question: …` · `nitpick (non-blocking): …` · `praise: …`
-   - Keep it short and specific, explain the *why*, and use a collegial tone ("we", not "you").
-   - For small, unambiguous fixes, include a GitLab suggestion block so the author can apply it in one click:
-     ````
-     ```suggestion:-0+0
-     <replacement line(s)>
-     ```
-     ````
-2. **Show the drafts first**: a numbered table of file:line, label and comment, plus one overall summary note with the verdict. Ask the user: post all, post selected numbers, or edit.
-3. Post only after the user confirms. Post each comment as a **diff discussion** on the exact line (see `references/gitlab.md`), then post the summary as a general MR note. If a line can't be positioned (it's outside the diff), fold that point into the summary note instead.
-4. **Never** approve, unapprove, merge, close or resolve threads unless the user explicitly asks.
-5. Report back with what was posted and the MR link.
+---
+
+## Domain add-on: data-dense and financial UIs
+
+Apply when the change touches grids, blotters, pricing, charts or real-time data:
+- [ ] Numeric columns are right-aligned with tabular figures (`font-variant-numeric: tabular-nums`), and decimal precision is consistent per instrument or field.
+- [ ] Positive and negative values aren't shown by colour alone. Stale or ticking values are visually distinguishable and accessible.
+- [ ] Grid configs (column defs, `getRowId`, value getters and formatters) are memoised or stable. Row identity is by ID so updates don't remount rows.
+- [ ] Transaction or delta updates are used instead of replacing the full row data on every tick.
+- [ ] Sorting and filtering on formatted values uses the raw value, not the display string.
+- [ ] Keyboard navigation inside the grid still works with custom cell renderers and editors.
